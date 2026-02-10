@@ -52,6 +52,16 @@ jobs:
           Copy-Item "build/Release/sam3.aux2" "$dist/aviutl2/Plugin/SAM3/" -Force
           Copy-Item -Recurse "python" "$dist/aviutl2/Plugin/SAM3/" -Force
 
+          # 最新 uv.exe を python フォルダへ入れる
+          $uvDir = Resolve-Path "$dist/aviutl2/Plugin/SAM3/python"
+          $env:UV_INSTALL_DIR = $uvDir.Path
+          $env:UV_NO_MODIFY_PATH = "1"   # PATH変更を抑止
+          irm https://astral.sh/uv/install.ps1 | iex
+
+          if (!(Test-Path (Join-Path $uvDir.Path "uv.exe"))) {
+            throw "Failed to install uv.exe into $($uvDir.Path)"
+          }
+
           # Script 側（SAM3color.anm2 は入れない）
           Copy-Item "lua/SAM3mask.anm2" "$dist/aviutl2/Script/SAM3/" -Force
           Copy-Item "build/Release/sam3mask.mod2" "$dist/aviutl2/Script/SAM3/" -Force
