@@ -1273,8 +1273,6 @@ def main():
 
     print("=== sam3_gradio_job start ===")
     print("job_dir =", str(job_dir))
-    print("DEVICE =", _JOB_DEVICE, "DTYPE =", str(_JOB_DTYPE))
-    print("INSERT_MODE =", _JOB_INSERT_MODE_DEFAULT)
     print("HTTP_PROXY =", os.environ.get("HTTP_PROXY"))
     print("NO_PROXY =", os.environ.get("NO_PROXY"))
 
@@ -1288,6 +1286,9 @@ def main():
         req = json.load(f)
 
     _apply_request_defaults(req)
+
+    print("DEVICE =", _JOB_DEVICE, "DTYPE =", str(_JOB_DTYPE))
+    print("INSERT_MODE =", _JOB_INSERT_MODE_DEFAULT)
 
     job_id = req.get("job_id", "unknown")
     src = req.get("source_video_path", "")
