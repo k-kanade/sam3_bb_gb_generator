@@ -8,10 +8,10 @@
 </p>
 
 # はじめに
-<!-- [![Release](https://img.shields.io/github/v/release/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator)
+[![Release](https://img.shields.io/github/v/release/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator)
 [![Downloads](https://img.shields.io/github/downloads/clean262/sam3_bb_gb_generator/total)](https://github.com/clean262/sam3_bb_gb_generator/releases/latest)
 [![License](https://img.shields.io/github/license/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator/blob/main/LICENSE)
-[![Last Commit](https://img.shields.io/github/last-commit/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator/commits/main) -->
+[![Last Commit](https://img.shields.io/github/last-commit/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator/commits/main)
 
 クリックで簡単に動画を切り取れるAviutl2プラグインです。
 
@@ -115,12 +115,16 @@ hf auth login　
 ## プラグインのインストール
 Nvidia driverのインストールとSAM3の利用登録を終えたら、プラグインのインストールには2種類のインストール方法があります。
 
-### Aviutl2-catalogからインストールする場合(推奨)
-現在catalogへの登録中です。しばらくお待ちください。
+### Aviutl2-catalogからインストールする場合(**推奨**)
+[Aviutl2-catalog](https://github.com/Neosku/aviutl2-catalog)をダウンロードし、インストールボタンを押すだけで導入は完了です。
 
 > **Aviutl2-catalog** は、AviUtl2 のプラグインやスクリプトを「検索→導入→更新」まで一括管理できるデスクトップアプリです。<br>
 > 従来のようにダウンロード時には解凍してファイルを移動させる必要はありません。また、アップデートがあれば通知が来て1クリックで更新も完了します。<br>
 > 利用したプラグイン/スクリプトの親作品リストも一括で取得できます。
+
+<a href="https://commons.nicovideo.jp/works/nc422952">
+  <img src="assets/catalog.png?raw=true" alt="samune" height="320">
+</a>
 
 ### Releaseからインストールする場合(optional)
 catalogを利用していない人はこちらの方法でインストールしてください。
