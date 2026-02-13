@@ -8,14 +8,19 @@
 </p>
 
 # はじめに
+<!-- [![Release](https://img.shields.io/github/v/release/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator)
+[![Downloads](https://img.shields.io/github/downloads/clean262/sam3_bb_gb_generator/total)](https://github.com/clean262/sam3_bb_gb_generator/releases/latest)
+[![License](https://img.shields.io/github/license/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator/blob/main/LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/clean262/sam3_bb_gb_generator)](https://github.com/clean262/sam3_bb_gb_generator/commits/main) -->
+
 クリックで簡単に動画を切り取れるAviutl2プラグインです。
 
 - **マウスクリック**だけで前景・背景を指定
 - 切り抜いた前景のみ(背景のみ)を**Aviutl2に自動挿入**
 - 挿入方法は**BB/GB/透過と選択可能**
-- ブラウザ上でプレビューしながらマスクを調整
+- プレビューしながら前景・背景を調整
 - 複数フレームに対してクリック可能
-- point/Box形式で前景を指定可能
+- point/Box形式で前景・背景を指定可能
 - テキストで前景を指定可能(実装中)
 
 **紹介動画**は[こちら](https://www.nicovideo.jp/watch/sm45931905)から<br>
@@ -24,7 +29,7 @@
 </a>
 
 # 利用に際して
-本プラグインを用いて動画制作を行った場合[親作品登録](https://www.nicovideo.jp/watch/sm45931905)をしていただけると喜びます。<br>
+本プラグインを用いて動画制作を行った場合[親作品登録](https://www.nicovideo.jp/watch/sm45931905)をしていただけると開発の励みになります。<br>
 親作品登録いただいたら見に行きます。
 
 開発状況等は作者[X: 旧twitter](https://x.com/clean123525)を参照してください。
@@ -33,6 +38,7 @@
 右上`New issue`ボタンから送れます。
 
 また本プラグインはコミュニティの発展のために、Aviutl2本体の[親作品登録](https://commons.nicovideo.jp/works/nc422952)を推奨しています。<br>
+[Aviutl2-catalog](https://github.com/Neosku/aviutl2-catalog)を利用することでAviutl2本体/プラグイン/スクリプトの親作品リストを一括で取得できます。<br>
 <a href="https://commons.nicovideo.jp/works/nc422952">
   <img src="assets/aviutl2.png?raw=true" alt="samune" height="320">
 </a>
@@ -99,14 +105,30 @@ access tokenを[発行](https://huggingface.co/settings/tokens)し
 ここで発行したtokenは一度しか表示されないので、保存し忘れた場合新たなtokenを作成してください。<br>
 <img src="assets/token.png?raw=true" alt="setting" height="320">
 
-取得したトークンを以下のコマンドで入力してください。<br>
+取得したトークンをターミナル等のアプリで、以下のコマンドで入力してください。<br>
 Add token as git credential?にはnでOKです。<br>
 ```bash
 hf auth login　
 ```
 
+## プラグインのインストール
+Nvidia driverのインストールとSAM3の利用登録を終えたら、プラグインのインストールには2種類のインストール方法があります。
+
+### Aviutl2-catalogからインストールする場合(推奨)
+現在catalogへの登録中です。しばらくお待ちください。
+
+> **Aviutl2-catalog** は、AviUtl2 のプラグインやスクリプトを「検索→導入→更新」まで一括管理できるデスクトップアプリです。<br>
+> 従来のようにダウンロード時には解凍してファイルを移動させる必要はありません。また、アップデートがあれば通知が来て1クリックで更新も完了します。<br>
+> 利用したプラグイン/スクリプトの親作品リストも一括で取得できます。
+
+### Releaseからインストールする場合(optional)
+catalogを利用していない人はこちらの方法でインストールしてください。
+[Github Release](https://github.com/clean262/sam3_bb_gb_generator/releases)から最新の`SAM3_win64.zip`をダウンロードして下さい。<br>
+zipを解凍後、`install.cmd`をダブルクリックしてください。セキュリティの警告に対して実行を押していただくと、インストールが完了します。
+
+
 # 使い方
-Aviutl2起動後、左上表示の欄からSAM3を選択してください。<br>
+Aviutl2起動後、左上 `表示` の欄から `SAM3` を選択してください。<br>
 <img src="assets/how_to_use/display.png?raw=true" alt="term" height="200">
 
 下のような画面が表示されるので、タイムライン上で切り抜きたい動画を選択し、挿入形式を決定してください。<br>
@@ -140,6 +162,10 @@ Object IDを指定することで、複数の物体を指定することも可�
 
 最後に、`Finish`を押すとAviutl2に切り抜き結果が自動挿入されます。<br>
 <img src="assets/how_to_use/result.png?raw=true" alt="term" height="640">
+
+## ライセンス
+
+**MIT ライセンス** 
 
 <!-- # uv install
 ```bash
