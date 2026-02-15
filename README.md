@@ -106,8 +106,8 @@ access tokenを[発行](https://huggingface.co/settings/tokens)し
 ここで発行したtokenは一度しか表示されないので、保存し忘れた場合新たなtokenを作成してください。<br>
 <img src="assets/token.png?raw=true" alt="setting" height="320">
 
-[プラグインのインストール](##プラグインのインストール)からプラグインをインストール後、
-取得したトークンをターミナル等のアプリで、以下のコマンドを1行ずつ入力してください。<br>
+すぐ下に記載のある[プラグインのインストール](##プラグインのインストール)からプラグインをインストール後(catalogからでもReleaseからでもどちらからでも大丈夫です)、<br>
+取得したトークンをターミナル等のアプリで、以下のコマンドを**1行ずつ**入力してください。<br>
 Add token as git credential?にはnでOKです。<br>
 ```bash
 cd C:\ProgramData\aviutl2\Plugin\SAM3\python
