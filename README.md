@@ -84,7 +84,7 @@ Aviutl2プラグインではありませんが、Google Colabで実行できる�
 # 導入方法
 ## Nvidia driver install
 NVIDIAのGPUを搭載したパソコンを所有している方は実行してください。搭載していない方は飛ばしてください。<br>
-GPUを用いて高速な動画切り取りを行うことが出来ます。<br>
+GPUを用いてかなり高速な動画切り取りを行うことが出来ます。<br>
 この[ページ](https://www.kkaneko.jp/tools/win/nvidiadriver.html)に従ってインストールしてください。<br>
 
 ```bash
@@ -107,7 +107,8 @@ git --version
 <img src="assets/sign_in2.png?raw=true" alt="sign in2" height="320">
 
 [facebook/sam3](https://huggingface.co/facebook/sam3)にアクセスし、以下の項目を入力してください。<br>
-許可が下りるまでしばらく時間がかかります(数十分から数時間)<br>
+許可が下りるまでしばらく時間がかかります（~~数十分から数時間~~）<br>
+<span style="color:red;">※場合によっては2〜3週間待つ可能性があります。</span>それ以上待つ場合はSAM3側へ問い合わせしてみて下さい<br>
 <img src="assets/terms.png?raw=true" alt="term" height="320">
 
 access tokenを[発行](https://huggingface.co/settings/tokens)し
