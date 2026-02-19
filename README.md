@@ -114,9 +114,10 @@ git --version
 access tokenを[発行](https://huggingface.co/settings/tokens)し
 右上のCreate new tokenから、新しいtokenを作成してください。<br>
 ここで発行したtokenは一度しか表示されないので、保存し忘れた場合新たなtokenを作成してください。<br>
+これはHugging Faceのトークンのため、SAM3の申請の有無にかかわらず発行することが出来ます。<br>
 <img src="assets/token.png?raw=true" alt="setting" height="320">
 
-すぐ下に記載のある[プラグインのインストール](##プラグインのインストール)からプラグインをインストール後(catalogからでもReleaseからでもどちらからでも大丈夫です)、<br>
+すぐ下に記載のある[プラグインのインストール](##プラグインのインストール)からプラグインをインストール後(catalogからでもReleaseからでもどちらからでも大丈夫です)。<br>
 取得したトークンをターミナル等のアプリで、以下のコマンドを**1行ずつ**入力してください。<br>
 トークンを入力するタイミングは`Enter your token(input will not be visible):`の時です。<br>
 トークンはパスワードと同様、他人に見せてはならないものなので、入力しても何も表示されませんが入力されています。<br>
