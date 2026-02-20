@@ -90,8 +90,8 @@ GPUを用いてかなり高速な動画切り取りを行うことが出来ま�
 ```bash
 nvidia-smi
 ```
-上記コマンドをターミナル等のアプリで入力した際に、CUDA Version: 12.6 以上の表記が出ていればOKです。<br>
-**既にNvidia driverをインストールされている方でもCUDA Version: 12.6 以上の表記が出るかは確認してください**
+上記コマンドをターミナル等のアプリで入力した際に、CUDA Version: 12.8 以上の表記が出ていればOKです。<br>
+**既にNvidia driverをインストールされている方でもCUDA Version: 12.8 以上の表記が出るかは確認してください**
 
 ## gitのインストール
 ターミナル等のアプリで以下のコマンドを入力し、gitがインストール済みと確認できる方は飛ばしてください
@@ -114,9 +114,10 @@ git --version
 access tokenを[発行](https://huggingface.co/settings/tokens)し
 右上のCreate new tokenから、新しいtokenを作成してください。<br>
 ここで発行したtokenは一度しか表示されないので、保存し忘れた場合新たなtokenを作成してください。<br>
+これはHugging Faceのトークンのため、SAM3の申請の有無にかかわらず発行することが出来ます。<br>
 <img src="assets/token.png?raw=true" alt="setting" height="320">
 
-すぐ下に記載のある[プラグインのインストール](##プラグインのインストール)からプラグインをインストール後(catalogからでもReleaseからでもどちらからでも大丈夫です)、<br>
+すぐ下に記載のある[プラグインのインストール](##プラグインのインストール)からプラグインをインストール後(catalogからでもReleaseからでもどちらからでも大丈夫です)。<br>
 取得したトークンをターミナル等のアプリで、以下のコマンドを**1行ずつ**入力してください。<br>
 トークンを入力するタイミングは`Enter your token(input will not be visible):`の時です。<br>
 トークンはパスワードと同様、他人に見せてはならないものなので、入力しても何も表示されませんが入力されています。<br>
@@ -130,7 +131,7 @@ cd C:\ProgramData\aviutl2\Plugin\SAM3\python
 cd C:\ProgramData\aviutl2\Plugin\SAM3\python
 .\uv.exe run python -c "from huggingface_hub import whoami; print(whoami())"
 ```
-`{'type': 'user', 'id':`...のようになればOKです。
+`{'type': 'user', 'id':`...の後が自分が作成したhugging faceのアカウント名と一致し、最後の部分`'auth': {'type': 'access_token', 'accessToken': {'displayName':...`以降が自分の作成したトークンの名前、そして`role`が正しく`READ`になっていることを確認してください。<br>
 
 SAM3の利用申請は、SAM3側が手動で許諾をとっているようです。<br>
 [こちら](https://huggingface.co/settings/gated-repos)でSAM3がAcceptedになっていれば承認されています。Pendingの場合、まだ保留中です。しばらくお待ちください。

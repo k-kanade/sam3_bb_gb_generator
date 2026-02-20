@@ -1,4 +1,4 @@
-// v0.0.6
+// v0.0.7
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
