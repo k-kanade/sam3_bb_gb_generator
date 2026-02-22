@@ -1,4 +1,3 @@
-// v0.0.6
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -90,12 +89,10 @@ static bool WriteTextFileUtf8Atomic(const fs::path& path, const std::string& tex
         ofs.write(text.data(), (std::streamsize)text.size());
         ofs.flush();
     }
-    // Prefer replace-existing move for better atomic visibility on Windows.
     if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         return true;
     }
 
-    // Fallback: std::filesystem rename.
     std::error_code ec;
     fs::rename(tmp, path, ec);
     if (!ec) return true;
@@ -172,8 +169,7 @@ static double GetProjectFps(EDIT_SECTION* edit) {
     return fps;
 }
 
-// Explicit timeline length adjustment requested by user:
-// apply result by -1 frame to avoid 1-frame overshoot on replace/import.
+// タイムラインでの長さ
 static constexpr int kExplicitApplyLengthAdjustFrames = -1;
 static int ApplyLengthAdjustFrames(int length_frames) {
     long long v = (long long)length_frames + (long long)kExplicitApplyLengthAdjustFrames;
@@ -478,9 +474,7 @@ static std::string PatchAliasReplaceVideoFilePath(
     return out.str();
 }
 
-// Parse [Object] header "frame=a,b" from alias text.
-// Returns true when both integers were parsed.
-static bool ParseAliasObjectFrameHeader(const std::string& alias_utf8, int& a_out, int& b_out) {
+// エイリアスからframe=a,bを解析
     std::string s = alias_utf8;
     if (s.size() >= 3 &&
         (unsigned char)s[0] == 0xEF &&
@@ -654,7 +648,7 @@ static std::string PatchAliasUpsertAlphaMaskEffect(
             out << line << "\r\n";
 
             if (is_target) {
-                // Write both display-label keys and var-name keys for robustness.
+                // 表示ラベルのキーと変数名のキーの両方
                 out << preferredKey << mask_video_path_utf8 << "\r\n";
                 out << preferredPathVarKey << mask_video_path_utf8 << "\r\n";
                 out << preferredStartKey << s_start << "\r\n";
@@ -1045,7 +1039,7 @@ static void __cdecl ApplyCreateProcImpl(EDIT_SECTION* edit) {
         if (replaced) return;
     }
 
-    // legacy fallback path (kept disabled): old behavior hid the source object
+    // 従来のフォールバック、無効化済み
     if (false && obj && g_apply_ctx->replace_source) {
         OBJECT_HANDLE src = FindObjectCoveringFrameByExactAlias(
             edit,
@@ -1570,8 +1564,8 @@ static FocusVideoInfo CaptureFocusVideo(EDIT_SECTION* edit) {
     OBJECT_LAYER_FRAME lf = edit->get_object_layer_frame(obj);
     out.layer = lf.layer;
     out.start_frame = lf.start;
-    // AviUtl2 timeline display/frame header compatibility:
-    // treat "frame=0,N" as (N+1) frames. So request end_frame keeps N.
+    // AviUtl2のタイムライン表示とフレームヘッダーの互換性
+    // AviUtl2のフレームの仕様にあわせる
     out.end_frame = (lf.end >= lf.start) ? lf.end : lf.start;
 
     // fps（タイムライン換算フォールバック用）
@@ -1757,7 +1751,7 @@ static void UpdateUiText(HWND hwnd, const FocusVideoInfo& f, const fs::path& job
 
 // ---- Python 起動 ----
 static std::optional<std::wstring> FindPythonExe() {
-    // 1) explicit override by environment variable
+    // 1) 明示的に環境変数に上書き
     wchar_t envbuf[32768]{};
     DWORD n = GetEnvironmentVariableW(L"SAM3_PYTHON_EXE", envbuf, (DWORD)std::size(envbuf));
     if (n > 0 && n < (DWORD)std::size(envbuf)) {
@@ -1768,7 +1762,7 @@ static std::optional<std::wstring> FindPythonExe() {
         }
     }
 
-    // 2) bundled python locations
+    // 2) Pythonの場所
     fs::path root = PluginRootDir();
     const fs::path cands[] = {
         root / L"Python" / L".venv" / L"Scripts" / L"python.exe",
@@ -1783,7 +1777,7 @@ static std::optional<std::wstring> FindPythonExe() {
         }
     }
 
-    // 3) PATH lookup
+    // 3) PATHを検索
     wchar_t pathbuf[MAX_PATH * 4]{};
     DWORD got = SearchPathW(nullptr, L"python.exe", nullptr, (DWORD)std::size(pathbuf), pathbuf, nullptr);
     if (got > 0 && got < (DWORD)std::size(pathbuf)) {

@@ -21,7 +21,6 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import cv2
 import gradio as gr
-import imageio_ffmpeg
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
@@ -657,8 +656,8 @@ def load_video_segment_frames(
     load_all: bool = True,
 ) -> Tuple[List[Image.Image], SegmentInfo]:
     """
-    髫ｰ謔ｶ繝ｻ繝ｻ・ｮ陞｢・ｼ驍・・・ｫ・｢郢晢ｽｻ[start_sec, end_sec] 驛｢・ｧ陞ｳ螟ｲ・ｽ・ｪ繝ｻ・ｭ驍ｵ・ｺ繝ｻ・ｿ鬮ｴ雜｣・ｽ・ｼ驍ｵ・ｺ繝ｻ・ｿ驍ｵ・ｲ郢晢ｽｻ
-    end_sec <= start_sec 驍ｵ・ｺ繝ｻ・ｮ驍ｵ・ｺ繝ｻ・ｨ驍ｵ・ｺ鬮ｦ・ｪ郢晢ｽｻ start 驍ｵ・ｺ闕ｵ譎｢・ｽ繝ｻmax_seconds 髯具ｽｻ郢晢ｽｻ郢晢ｽｻ
+    Load [start_sec, end_sec] from `video_path` and return segment frames + metadata.
+    Invalid ranges (`end_sec <= start_sec`) are treated as errors.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -676,16 +675,16 @@ def load_video_segment_frames(
         cap.release()
         raise RuntimeError(f"Invalid segment range: start_sec={start_sec}, end_sec={end_sec}")
 
-    # max_seconds 髯橸ｽｳ霑壼生繝ｻ髯滉ｻ｣繝ｻ
+    # Clamp segment duration to max_seconds when requested.
     if max_seconds and (end_sec - start_sec) > float(max_seconds):
         end_sec = start_sec + float(max_seconds)
 
-    # 髯ｷ・ｿ繝ｻ・ｯ鬮｢・ｭ繝ｻ・ｽ驍ｵ・ｺ繝ｻ・ｪ驛｢・ｧ騾包ｽｻ陷・ｽｾ髯具ｽｻ繝ｻ・ｻ驛｢・ｧ繝ｻ・ｷ驛｢譎｢・ｽ・ｼ驛｢・ｧ繝ｻ・ｯ
+    # Seek near the segment start in milliseconds.
     cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, start_sec) * 1000.0)
 
     frames: List[Image.Image] = []
     t_limit = end_sec
-    # cv2 驍ｵ・ｺ繝ｻ・ｯ timestamp 髯ｷ・ｿ鬮｢ﾂ繝ｻ・ｾ陷会ｽｱ遯ｶ・ｲ髣包ｽｳ隶主･・ｽｽ・ｮ霑壼遜・ｽ・ｮ陞｢・ｹ遶企・・ｸ・ｺ髦ｮ蜷ｮ繝ｻ驍ｵ・ｺ陟募ｨｯ譌ｺ驛｢・ｧ闕ｵ譏ｴ繝ｻ驍ｵ・ｺ繝ｻ・ｧ驍ｵ・ｲ遯ｶ蜀ｪs髫ｰ・ｰ陝ｶ・ｷ繝ｻ・ｮ陷会ｽｱ繝ｻ繧頑割繝ｻ・ｵ鬨ｾ蛹・ｽｽ・ｨ
+    # cv2 timestamps can drift around boundaries; use fps-based frame index estimates.
     start_frame_guess = int(round(start_sec * fps))
     exp_frames = int(expected_num_frames) if expected_num_frames is not None else 0
     if exp_frames > 0:
@@ -833,26 +832,23 @@ def load_video_segment_frames(
 # -------------------------
 
 def _resolve_ffmpeg_exe() -> str:
-    # 1) imageio-ffmpeg bundled
-    try:
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        if exe and os.path.isfile(exe):
-            return exe
-    except Exception:
-        pass
-
-    # 2) env var
-    env_exe = os.environ.get("IMAGEIO_FFMPEG_EXE")
-    if env_exe and os.path.isfile(env_exe):
-        return env_exe
-
-    # 3) system
+    # 1) PATH lookup
     sys_exe = shutil.which("ffmpeg")
-    if sys_exe:
-        return sys_exe
+    if sys_exe and os.path.isfile(sys_exe):
+        return os.path.abspath(sys_exe)
+
+    # 2) fallback local executable
+    local_candidates = [
+        os.path.abspath(os.path.join("SAM3-kaizo", "ffmpeg.exe")),
+        str((Path(__file__).resolve().parent.parent / "ffmpeg.exe")),
+        str((Path(__file__).resolve().parent.parent / "SAM3-kaizo" / "ffmpeg.exe")),
+    ]
+    for cand in local_candidates:
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
 
     raise RuntimeError(
-        "ffmpeg executable was not found. Install imageio-ffmpeg or set IMAGEIO_FFMPEG_EXE."
+        "ffmpeg executable was not found. Checked PATH and local fallback: SAM3-kaizo/ffmpeg.exe."
     )
 
 def _decode_subprocess_text(data: Any) -> str:
@@ -1050,8 +1046,8 @@ def make_h264_aac_preview(
     if not video_noaudio or not os.path.isfile(video_noaudio):
         raise RuntimeError(f"video_noaudio not found: {video_noaudio}")
 
-    # scale: 髯晢ｽｷ郢晢ｽｻ繝ｻ遏･ax_width髣比ｼ夲ｽｽ・･髣包ｽｳ闕ｵ譏ｶ繝ｻ驍ｵ・ｺ陷会ｽｱ遯ｶ・ｻ鬩搾ｽｵ繝ｻ・ｦ驍ｵ・ｺ繝ｻ・ｯ鬮｢・ｾ繝ｻ・ｪ髯ｷ蟠趣ｽｼ譁舌・2驍ｵ・ｺ繝ｻ・ｧ髯句ｹ｢・ｽ・ｶ髫ｰ・ｨ繝ｻ・ｰ驍ｵ・ｺ繝ｻ・ｫ髫ｰ・ｰ郢晢ｽｻ遶擾ｽｴ驛｢・ｧ郢晢ｽｻ
-    # min(960,iw) 驍ｵ・ｺ繝ｻ・ｮ 驕ｯ・ｶ郢晢ｽｻ驕ｯ・ｶ郢晢ｽｻ驍ｵ・ｺ繝ｻ・ｯ驛｢譎・ｽｼ譁絶襖驛｢譎｢・ｽ・ｫ驛｢・ｧ繝ｻ・ｿ髯ｷﾂ郢晢ｽｻ邵ｲ螳壼ｳｪ繝ｻ・ｺ髯具ｽｻ郢晢ｽｻ繝ｻ鬘假ｽｬ繝ｻ・ｽ・ｱ驍ｵ・ｺ郢晢ｽｻ遶企・・ｸ・ｺ繝ｻ・ｮ驍ｵ・ｺ繝ｻ・ｧ \, 驍ｵ・ｺ繝ｻ・ｧ驛｢・ｧ繝ｻ・ｨ驛｢・ｧ繝ｻ・ｹ驛｢・ｧ繝ｻ・ｱ驛｢譎｢・ｽ・ｼ驛｢譏ｴ繝ｻ
+    # scale: cap width to max_width while preserving aspect ratio.
+    # `-2` forces an even height for codec compatibility (and keeps width <= max_width).
     vf = f"scale='min({max_width}\\,iw)':-2"
     if fps is not None and int(fps) > 0:
         vf = vf + f",fps={int(fps)}"
@@ -1166,7 +1162,7 @@ def mux_audio_from_original_segment(
     raise RuntimeError(f"Failed to mux audio.\n[copy]\n{err}\n\n[aac]\n{err2}\n")
 
 # -------------------------
-# SAM3 model/session helpers (app.py 鬨ｾ蛹・ｽｽ・ｱ髫ｴ螟ｲ・ｽ・･)
+# SAM3 model/session helpers (ported from the original app.py).
 # -------------------------
 
 MODEL_ID = "facebook/sam3"
@@ -1277,7 +1273,7 @@ def _clear_points_for_object_all_frames(state: "AppState", obj_id: int) -> None:
         if oid in mp and mp[oid]:
             mp[oid] = []
             changed_frames.append(int(fidx))
-    # 鬮ｯ・ｦ繝ｻ・ｨ鬩穂ｼ夲ｽｽ・ｺ驛｢・ｧ繝ｻ・ｭ驛｢譎｢・ｽ・｣驛｢譏ｴ繝ｻ邵ｺ蜥擾ｽｹ譎｢・ｽ・･驛｢・ｧ陜｣・､隨冗霜諤上・・ｹ髯具ｽｹ郢晢ｽｻ
+    # Invalidate composited frame cache for frames whose prompts changed.
     for f in changed_frames:
         state.composited_frames.pop(f, None)
 
@@ -2744,9 +2740,9 @@ def render_fg_black_video(
     codec: str = None,
 ) -> str:
     """
-    fg(鬲・ｺｷ・ｮ螢ｹﾎ樣垓雜｣・ｽ・ｯ) 驛｢・ｧ髮区ｩｸ・ｽ・ｿ郢晢ｽｻ隨倥・ﾂ蠅難ｽｻ阮吶・驍ｵ・ｺ陷ｷ・ｶ繝ｻ荵昴・鬩帙・・ｽ・ｦ遶擾ｽｽ繝ｻ・ｻ繝ｻ・ｶ2郢晢ｽｻ郢晢ｽｻ
-    - union mask 髯ｷﾂ郢晢ｽｻ隨・ｽ｡驍ｵ・ｺ陞滂ｽｧ郢晢ｽｻRGB驍ｵ・ｲ遶乗劼・ｽ・､隰費ｽｶ郢晢ｽｻ鬲・ｺ倥・
-    - 鬯ｮ・ｻ繝ｻ・ｳ髯橸ｽ｢繝ｻ・ｰ驍ｵ・ｺ繝ｻ・ｯ mux_audio 驍ｵ・ｺ郢晢ｽｻTrue 驍ｵ・ｺ繝ｻ・ｮ髯懶ｽ｣繝ｻ・ｴ髯ｷ・ｷ陋ｹ・ｻ郢晢ｽｻ驍ｵ・ｺ繝ｻ・ｿ髯ｷ蛹ｻ繝ｻ髯悟､青蛹・ｽｽ・ｻ髯具ｽｹ繝ｻ・ｺ鬯ｮ・｢髦ｮ蜊搾ｽｰ驛｢・ｧ隰梧汚・ｽ・ｻ陋滂ｽ･繝ｻ・ｰ驛｢・ｧ郢晢ｽｻ
+    Render a foreground-on-black video from propagated masks.
+    - Use per-frame union masks and keep RGB only where mask > 0.
+    - Render no-audio first; optionally mux source audio when `mux_audio` is True.
     """
     if state is None or state.num_frames == 0:
         raise gr.Error("No frames loaded.")
@@ -2808,8 +2804,8 @@ def render_fg_black_video(
     return out_noaudio
 def render_mask_video(state: AppState, codec: str = None) -> str:
     """
-    mask髯ｷ閧ｴ繝ｻ陋ｻ・､驛｢・ｧ髮区ｩｸ・ｽ・ｿ郢晢ｽｻ隨倥・ﾂ蠅難ｽｻ阮吶・驍ｵ・ｺ陷ｷ・ｶ繝ｻ荵昴・鬩帙・・ｽ・ｦ遶擾ｽｽ繝ｻ・ｻ繝ｻ・ｶ2郢晢ｽｻ郢晢ｽｻ
-    - 0/255 驍ｵ・ｺ繝ｻ・ｮ 3ch mp4 驍ｵ・ｺ繝ｻ・ｨ驍ｵ・ｺ陷会ｽｱ遯ｶ・ｻ髣厄ｽｫ隴取得・ｽ・ｭ陋帙・・ｽ・ｼ闔蛹・ｽｽ・ｺ陷ｻ逎ｯ蜈ｱ髯ｷ繝ｻ・ｽ・ｪ髯ｷ驛∬か繝ｻ・ｼ郢晢ｽｻ
+    Render a binary mask video from propagated masks.
+    - Output a 3-channel MP4 with pixel values 0/255 (white=foreground, black=background).
     """
     if state is None or state.num_frames == 0:
         raise gr.Error("No frames loaded.")
@@ -2916,7 +2912,7 @@ def render_gbbb_video(
                 end_sec=state.segment_end_sec,
             )
         except Exception as e:
-            # audio髯樊ｻゑｽｽ・ｱ髫ｰ・ｨ陷会ｽｱ邵ｲ蝣､・ｹ・ｧ郢ｧ莠包ｽｸ蜊諱崎叉蟯ｩ蜻ｳ驍ｵ・ｺ闔会ｽ｣郢晢ｽｻ髫ｹ・ｿ闕ｵ譏ｶ繝ｻ郢晢ｽｻ騾趣ｽｯ・ゑｽｰ鬨ｾ蛹・ｽｽ・ｨ髣包ｽｳ鬮ｮ竏晏牽驍ｵ・ｺ闕ｵ譎｢・ｽ荵昴・郢晢ｽｻ
+            # Audio mux failures should not abort the job; keep the no-audio render.
             print("[WARN] audio mux failed:", e)
             out_final = out_noaudio
     else:
@@ -2937,9 +2933,9 @@ def render_preview_mp4(
     audio_bitrate: str = "96k",
 ) -> str:
     """
-    Render Preview 驍ｵ・ｺ繝ｻ・ｮ髮趣ｽｬ遶丞､ｲ・ｽ繝ｻ
-      1) 髣包ｽｳ繝ｻ・ｭ鬯ｮ・｢郢晢ｽｻ cv2(VideoWriter)驍ｵ・ｺ繝ｻ・ｧGB/BB(noaudio)驛｢・ｧ陷代・・ｽ・ｽ隲帛･・ｽｽ繝ｻ
-      2) 髯樊ｺｽ蛻､鬩ｪ・､: ffmpeg驍ｵ・ｺ繝ｻ・ｧ H.264(avc1) (+AAC) 驍ｵ・ｺ繝ｻ・ｮ 驕ｯ・ｶ隲帷ｿｫ繝ｻ驛｢譎｢・ｽ・ｬ驛｢譎∽ｾｭ・守､ｼ・ｹ譎｢・ｽ・ｼ鬨ｾ蛹・ｽｽ・ｨmp4驕ｯ・ｶ郢晢ｽｻ驍ｵ・ｺ繝ｻ・ｫ驍ｵ・ｺ陷ｷ・ｶ繝ｻ繝ｻ
+    Render preview in two steps:
+      1) Write an intermediate GB/BB no-audio video via cv2 (VideoWriter).
+      2) Transcode to H.264/AAC MP4 via ffmpeg for browser/Gradio playback.
     """
     if state is None or state.num_frames == 0:
         raise gr.Error("No frames loaded.")
@@ -3178,7 +3174,7 @@ def main():
         )
 
     options = req.get("options", {}) or {}
-    # 鬯ｮ貊ゑｽｽ・ｷ髯昴・・ｽ・ｺ驍ｵ・ｺ繝ｻ・ｧ驍ｵ・ｺ繝ｻ・ｮ驛｢譎｢・ｽ・｡驛｢譎｢・ｽ・｢驛｢譎｢・ｽ・ｪ髫ｴ・ｫ繝ｻ・ｯ髮九ｅ繝ｻ繝ｻ蟶晢ｽｩ蛹・ｽｽ・ｿ驍ｵ・ｺ闔会ｽ｣繝ｻ迢暦ｽｸ・ｺ雋・∞・ｽ竏ｫ・ｸ・ｲ遶擾ｽｫ隨冗霜蟠輔・・ｶ鬯ｮ・ｯ陷亥沺・ｬ・ｰ髯橸ｽｳ郢晢ｽｻ<=0)驍ｵ・ｺ繝ｻ・ｯ髣包ｽｳ闔ｨ竏晏ｿ憺し・ｺ繝ｻ・ｫ髣包ｽｳ繝ｻ・ｸ驛｢・ｧ遶丞､ｲ・ｽ繝ｻ
+    # max_seconds: accept only positive integers; fall back to default (600) otherwise.
     ms_val = options.get("max_seconds", 600)
     try:
         max_seconds = 600 if ms_val is None else int(ms_val)
@@ -3370,7 +3366,7 @@ def main():
                     continue
                 raise
 
-        # 髣包ｽｳ鬯ｩ蟷｢・ｽ・ｨ驛｢譎√・郢晢ｽｻ驛｢・ｧ繝ｻ・ｸ驛｢譎｢・ｽ・ｧ驛｢譎｢・ｽ・ｳ驍ｵ・ｺ繝ｻ・ｧ髯橸ｽｻ隶灘･・ｽｽ・ｧ驍ｵ・ｺ隰疲ｻゑｽｽ・ｿ郢晢ｽｻ繝ｻ・ｦ遶丞｣ｺ繝ｻ驍ｵ・ｺ髦ｮ蜷ｮ繝ｻ驍ｵ・ｺ陟募ｨｯ譌ｺ驛｢・ｧ郢晢ｽｻ
+        # Release temporary allocations before entering the UI loop.
         gc.collect()
     except Exception as e:
         traceback.print_exc()
@@ -3391,7 +3387,7 @@ def main():
         gr.Markdown("## SAM3 BB/GB Generator")
         # gr.Markdown(f"- job_id: `{job_id}`")
         # gr.Markdown(f"- source_video_path: `{src}`")
-        # gr.Markdown(f"- segment: `{seginfo.start_sec:.3f}` sec 驕ｶ鄙ｫ繝ｻ`{seginfo.end_sec:.3f}` sec")
+        # gr.Markdown(f"- segment: `{seginfo.start_sec:.3f}` sec to `{seginfo.end_sec:.3f}` sec")
         gr.Markdown(
             f"- loaded frames: `{seginfo.num_frames}` @ `{seginfo.fps:.3f}` fps "
             f"(device: `{_JOB_DEVICE}`, dtype: `{_JOB_DTYPE}`, chunk: `{state0.session_chunk_frames}`)"
@@ -3416,7 +3412,7 @@ def main():
             mux_audio_chk = gr.Checkbox(value=_JOB_AUDIO_MUX_DEFAULT, label="Mux audio (ffmpeg)")
         preview_video = gr.Video(label="Render Preview (H.264/AAC)", interactive=False)
         with gr.Row():
-            # Render Preview: 驕ｯ・ｶ隲帑ｼ夲ｽｽ・ｸ繝ｻ・ｭ鬯ｮ・｢陷・ｽｪ郢晢ｽｻpreview髯樊ｺｽ蛻､鬩ｪ・､驕ｯ・ｶ郢晢ｽｻ驍ｵ・ｺ繝ｻ・ｧ H.264/AAC mp4 驛｢・ｧ陷代・・ｽ・ｽ隲帛ｲｩ螟｢驍ｵ・ｺ繝ｻ・ｦ Gradio 驍ｵ・ｺ繝ｻ・ｫ鬮ｯ・ｦ繝ｻ・ｨ鬩穂ｼ夲ｽｽ・ｺ
+            # Render Preview uses a 2-step path: cv2 intermediate -> ffmpeg H.264/AAC MP4.
             render_preview_btn = gr.Button("Render Preview (H.264/AAC)", variant="secondary")
             finish_btn = gr.Button("Finish (write result.json / no preview)", variant="primary")
             fail_btn = gr.Button("Fail", variant="secondary")
