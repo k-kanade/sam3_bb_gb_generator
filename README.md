@@ -18,6 +18,7 @@
 - Python3.13.xx  
 - CUDA  
 - Hugging FaceアカウントとRead Token
+- FFmpeg(最新のもの)
 - つよいPC　
 
 # 導入方法  
@@ -28,7 +29,7 @@
   GPUの場合 https://pytorch.org/get-started/locally/ を見て自分のCUDAのバージョンに合わせてしてください  
 4.Hugging Faceからfacebook/sam3のアクセス権を入手し、Read権限のあるTokenを取得してください  
 5.`run hf auth login`を実行し、Tokenを設定してください  
-
+6.FFmpegをPathに通すか`Plugin\SAM3-kaizo`に`FFmpeg.exe`を置いてください
 # 修正と最適化一覧  
 
 ## 名前変更  
