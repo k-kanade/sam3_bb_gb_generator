@@ -2,19 +2,21 @@
 name = "sam3-video-segmentation"
 version = "0.1.0"
 description = "Add your description here"
-readme = "README.md"
+readme = "../README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "accelerate>=1.11.0",
+    "av>=14.0.0",
     "gradio>=5.49.1",
     "imageio-ffmpeg>=0.6.0",
-    "imageio[pyav]>=2.37.2",
+    "imageio>=2.37.2",
     "kernels>=0.11.0",
     "opencv-python>=4.12.0.88",
     "spaces>=0.42.1",
-    "torch==2.8.0",
+    "torch>=2.8.0",
     "torchvision>=0.23.0",
-    "transformers",
+    "triton>=3.4.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@69f003696b",
 ]
 
 [tool.ruff]
@@ -57,17 +59,3 @@ convention = "google"
 [tool.ruff.format]
 docstring-code-format = true
 
-[tool.uv.sources]
-transformers = { git = "https://github.com/huggingface/transformers.git", rev = "69f003696b" }
-
-torch = [
-  { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-]
-torchvision = [
-  { index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true

@@ -4,6 +4,13 @@ project(sam3_aux2 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(NOT WIN32)
+  message(FATAL_ERROR "This project targets Windows only (AviUtl2 plugin).")
+endif()
+if(NOT MSVC)
+  message(FATAL_ERROR "Use MSVC toolchain (cl.exe) to build this project.")
+endif()
+
 # --------------------------------------------
 # Layout:
 #   <root>/aviutl2_sdk/*.h
@@ -57,7 +64,7 @@ add_library(sam3_aux2 SHARED
 sam3_apply_common(sam3_aux2)
 
 set_target_properties(sam3_aux2 PROPERTIES
-  OUTPUT_NAME "sam3"
+  OUTPUT_NAME "sam3-kaizo"
   PREFIX ""
   SUFFIX ".aux2"
 )
@@ -69,7 +76,7 @@ add_library(sam3mask_mod2 SHARED
 sam3_apply_common(sam3mask_mod2)
 
 set_target_properties(sam3mask_mod2 PROPERTIES
-  OUTPUT_NAME "sam3mask"
+  OUTPUT_NAME "sam3mask-kaizo"
   PREFIX ""
   SUFFIX ".mod2"
 )

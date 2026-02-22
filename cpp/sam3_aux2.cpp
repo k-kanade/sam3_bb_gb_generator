@@ -1,4 +1,4 @@
-// v0.0.7
+// v0.0.6
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -88,16 +88,22 @@ static bool WriteTextFileUtf8Atomic(const fs::path& path, const std::string& tex
         std::ofstream ofs(tmp, std::ios::binary);
         if (!ofs) return false;
         ofs.write(text.data(), (std::streamsize)text.size());
+        ofs.flush();
     }
+    // Prefer replace-existing move for better atomic visibility on Windows.
+    if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return true;
+    }
+
+    // Fallback: std::filesystem rename.
     std::error_code ec;
     fs::rename(tmp, path, ec);
     if (!ec) return true;
 
     // 既存がある場合は置換
-    fs::remove(path, ec);
-    ec.clear();
-    fs::rename(tmp, path, ec);
-    return !ec;
+    std::error_code ec2;
+    fs::remove(tmp, ec2);
+    return false;
 }
 
 static std::optional<std::string> ReadAllText(const fs::path& path) {
@@ -105,6 +111,43 @@ static std::optional<std::string> ReadAllText(const fs::path& path) {
     if (!ifs) return std::nullopt;
     std::ostringstream ss;
     ss << ifs.rdbuf();
+    return ss.str();
+}
+
+static std::string ReadTailText(const fs::path& path, size_t max_bytes) {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) return {};
+    ifs.seekg(0, std::ios::end);
+    std::streamoff end = ifs.tellg();
+    if (end <= 0) return {};
+
+    std::streamoff take = (std::streamoff)std::min<uintmax_t>((uintmax_t)end, (uintmax_t)max_bytes);
+    if (take <= 0) return {};
+    ifs.seekg(-take, std::ios::end);
+
+    std::string out((size_t)take, '\0');
+    ifs.read(out.data(), take);
+    out.resize((size_t)ifs.gcount());
+    return out;
+}
+
+static std::string BuildFallbackResultJsonOnUnexpectedExit(DWORD exit_code, const fs::path& jobdir) {
+    std::string tail = ReadTailText(jobdir / L"python.stderr.txt", 8192);
+    if (tail.empty()) tail = ReadTailText(jobdir / L"python.log.txt", 8192);
+    if (tail.empty()) tail = ReadTailText(jobdir / L"python.stdout.txt", 8192);
+
+    std::string msg = "Python process exited before result.json was created. exit_code=" + std::to_string(exit_code);
+    if (!tail.empty()) {
+        msg += "\n---- python log tail ----\n";
+        msg += tail;
+    }
+
+    std::ostringstream ss;
+    ss << "{\n"
+        << "  \"success\": false,\n"
+        << "  \"error_message\": \"" << JsonEscape(msg) << "\",\n"
+        << "  \"stats\": { \"num_frames\": 0, \"fps\": 0.0 }\n"
+        << "}\n";
     return ss.str();
 }
 
@@ -129,12 +172,25 @@ static double GetProjectFps(EDIT_SECTION* edit) {
     return fps;
 }
 
+// Explicit timeline length adjustment requested by user:
+// apply result by -1 frame to avoid 1-frame overshoot on replace/import.
+static constexpr int kExplicitApplyLengthAdjustFrames = -1;
+static int ApplyLengthAdjustFrames(int length_frames) {
+    long long v = (long long)length_frames + (long long)kExplicitApplyLengthAdjustFrames;
+    if (v < 1) v = 1;
+    if (v > (long long)(std::numeric_limits<int>::max)()) {
+        v = (long long)(std::numeric_limits<int>::max)();
+    }
+    return (int)v;
+}
+
 static void AppendLog(const fs::path& jobdir, const std::wstring& msg);
 static void LogObjectRange(EDIT_SECTION* edit, const fs::path& jobdir, const wchar_t* tag, OBJECT_HANDLE obj);
 static void LogItemValue(EDIT_SECTION* edit, const fs::path& jobdir, OBJECT_HANDLE obj,
     const wchar_t* eff, const wchar_t* item, const wchar_t* tag);
 static bool SetItemValueLogged(EDIT_SECTION* edit, const fs::path& jobdir, OBJECT_HANDLE obj,
     const wchar_t* eff, const wchar_t* item, const char* value, const wchar_t* tag);
+static std::optional<std::string> ExtractJsonString2(const std::string& json, const std::string& key);
 
 // ---- alias(UTF-8) 解析ユーティリティ ----
 static inline bool StartsWith(const std::string& s, const std::string& prefix) {
@@ -422,6 +478,51 @@ static std::string PatchAliasReplaceVideoFilePath(
     return out.str();
 }
 
+// Parse [Object] header "frame=a,b" from alias text.
+// Returns true when both integers were parsed.
+static bool ParseAliasObjectFrameHeader(const std::string& alias_utf8, int& a_out, int& b_out) {
+    std::string s = alias_utf8;
+    if (s.size() >= 3 &&
+        (unsigned char)s[0] == 0xEF &&
+        (unsigned char)s[1] == 0xBB &&
+        (unsigned char)s[2] == 0xBF) {
+        s.erase(0, 3);
+    }
+
+    std::istringstream iss(s);
+    std::string line;
+    bool in_object_header = false;
+    while (std::getline(iss, line)) {
+        RStripCR(line);
+        std::string t = TrimAscii(line);
+        if (t == "[Object]") {
+            in_object_header = true;
+            continue;
+        }
+        if (in_object_header && !t.empty() && t.front() == '[') {
+            break;
+        }
+        if (!in_object_header) continue;
+        if (!StartsWith(t, "frame=")) continue;
+
+        std::string v = TrimAscii(t.substr(6));
+        size_t c = v.find(',');
+        if (c == std::string::npos) return false;
+        std::string s1 = TrimAscii(v.substr(0, c));
+        std::string s2 = TrimAscii(v.substr(c + 1));
+        if (s1.empty() || s2.empty()) return false;
+        char* e1 = nullptr;
+        char* e2 = nullptr;
+        long long a = std::strtoll(s1.c_str(), &e1, 10);
+        long long b = std::strtoll(s2.c_str(), &e2, 10);
+        if (e1 == s1.c_str() || e2 == s2.c_str()) return false;
+        a_out = (int)a;
+        b_out = (int)b;
+        return true;
+    }
+    return false;
+}
+
 static int FindMaxObjectIndexInAlias(const std::string& alias_utf8) {
     std::istringstream iss(alias_utf8);
     std::string line;
@@ -505,7 +606,7 @@ static std::string PatchAliasUpsertAlphaMaskEffect(
     std::string line;
 
     const std::string kEff = "effect.name=";
-    const std::string targetEffect = "SAM3mask";
+    const std::string targetEffect = "SAM3mask-kaizo";
 
     // "マスク動画ファイル" は SAM3mask.anm2 の --file@path:マスク動画ファイル に対応
     const std::string preferredKey = WideToUtf8(L"\u30de\u30b9\u30af\u52d5\u753b\u30d5\u30a1\u30a4\u30eb") + "=";
@@ -553,7 +654,7 @@ static std::string PatchAliasUpsertAlphaMaskEffect(
             out << line << "\r\n";
 
             if (is_target) {
-                // 堅牢性の為表示ラベルと変数名キーを記述
+                // Write both display-label keys and var-name keys for robustness.
                 out << preferredKey << mask_video_path_utf8 << "\r\n";
                 out << preferredPathVarKey << mask_video_path_utf8 << "\r\n";
                 out << preferredStartKey << s_start << "\r\n";
@@ -751,8 +852,8 @@ struct ApplyCtx {
     std::wstring name_w;
     bool focus_after = true;
 
-	// auto-hide (do not delete) source object after successful insert
-	bool hide_source = true;
+	// replace source object in-place after successful insert
+	bool replace_source = true;
 	int  src_layer = -1;
 	int  src_frame = -1;            // any frame inside the source object's range (usually start_frame)
 	std::string src_alias_utf8;     // original (unpatched) alias for identification
@@ -764,6 +865,75 @@ static void __cdecl ApplyCreateProcImpl(EDIT_SECTION* edit);
 static void LogApplySehException(const fs::path* jobdir, DWORD code);
 static bool IsLayerRangeFree(EDIT_SECTION* edit, int layer, int start_frame, int end_frame_excl);
 static int  FindFreeLayerAbove(EDIT_SECTION* edit, int base_layer, int start_frame, int end_frame_excl);
+
+static bool ReplaceSourceObjectInPlace(EDIT_SECTION* edit, const fs::path& jobdir, ApplyCtx* ctx, OBJECT_HANDLE created_obj) {
+    if (!edit || !ctx || !created_obj) return false;
+
+    OBJECT_HANDLE src = FindObjectCoveringFrameByExactAlias(
+        edit,
+        (ctx->src_layer >= 0) ? ctx->src_layer : ctx->base_layer,
+        (ctx->src_frame >= 0) ? ctx->src_frame : ctx->frame,
+        ctx->src_alias_utf8
+    );
+    AppendLog(jobdir, std::wstring(L"[replace] source lookup => ") + (src ? L"found" : L"not found"));
+    if (!src) return false;
+    if (src == created_obj) {
+        AppendLog(jobdir, L"[replace] source equals created object; skip.");
+        return true;
+    }
+
+    OBJECT_LAYER_FRAME src_lf = edit->get_object_layer_frame(src);
+    LogObjectRange(edit, jobdir, L"replace.src", src);
+
+    std::wstring src_name;
+    if (edit->get_object_name) {
+        LPCWSTR n = edit->get_object_name(src);
+        if (n && n[0]) src_name = n;
+    }
+
+    int tmp_layer = FindFreeLayerAbove(edit, src_lf.layer, src_lf.start, src_lf.end);
+    if (tmp_layer < 0) tmp_layer = src_lf.layer + 1;
+    if (tmp_layer > 9999) tmp_layer = 9999;
+
+    bool moved_src_away = false;
+    if (edit->move_object) moved_src_away = edit->move_object(src, tmp_layer, src_lf.start);
+    AppendLog(jobdir,
+        L"[replace] move source away => " + std::wstring(moved_src_away ? L"true" : L"false") +
+        L" (tmp_layer=" + std::to_wstring(tmp_layer) + L")");
+    if (!moved_src_away) return false;
+
+    bool moved_created = false;
+    if (edit->move_object) moved_created = edit->move_object(created_obj, src_lf.layer, src_lf.start);
+    AppendLog(jobdir,
+        L"[replace] move created => " + std::wstring(moved_created ? L"true" : L"false") +
+        L" (layer=" + std::to_wstring(src_lf.layer) + L", frame=" + std::to_wstring(src_lf.start) + L")");
+
+    if (!moved_created) {
+        bool rollback_src = false;
+        if (edit->move_object) rollback_src = edit->move_object(src, src_lf.layer, src_lf.start);
+        AppendLog(jobdir, std::wstring(L"[replace] rollback source => ") + (rollback_src ? L"true" : L"false"));
+        return false;
+    }
+
+    if (edit->delete_object) {
+        edit->delete_object(src);
+        AppendLog(jobdir, L"[replace] source deleted.");
+    }
+
+    if (!src_name.empty() && edit->set_object_name) {
+        edit->set_object_name(created_obj, src_name.c_str());
+        AppendLog(jobdir, L"[replace] restored source name.");
+    } else {
+        AppendLog(jobdir, L"[replace] source name empty; keep created name.");
+    }
+
+    ctx->used_layer = src_lf.layer;
+    ctx->used_length = std::max(1, src_lf.end - src_lf.start);
+    if (ctx->focus_after && edit->set_focus_object) {
+        edit->set_focus_object(created_obj);
+    }
+    return true;
+}
 
 // SEH wrapper: MUST NOT create any C++ objects with destructors in this function,
 // otherwise MSVC errors with C2712.
@@ -818,6 +988,17 @@ static void __cdecl ApplyCreateProcImpl(EDIT_SECTION* edit) {
         }
         if (length < 1) length = 1;
     }
+    {
+        int before_adjust = length;
+        length = ApplyLengthAdjustFrames(length);
+        if (length != before_adjust) {
+            AppendLog(
+                jobdir,
+                L"[apply] explicit length adjust applied: " +
+                std::to_wstring(before_adjust) + L" -> " + std::to_wstring(length)
+            );
+        }
+    }
 
     int end_frame_excl = frame + length;
     int base_layer = g_apply_ctx->base_layer;
@@ -858,9 +1039,14 @@ static void __cdecl ApplyCreateProcImpl(EDIT_SECTION* edit) {
         }
     }
 
-    // After successful creation, hide source object without deleting it
-    // (set opacity=100 + audio disable)
-    if (obj && g_apply_ctx->hide_source) {
+    if (obj && g_apply_ctx->replace_source) {
+        bool replaced = ReplaceSourceObjectInPlace(edit, jobdir, g_apply_ctx, obj);
+        AppendLog(jobdir, std::wstring(L"[replace] result => ") + (replaced ? L"true" : L"false"));
+        if (replaced) return;
+    }
+
+    // legacy fallback path (kept disabled): old behavior hid the source object
+    if (false && obj && g_apply_ctx->replace_source) {
         OBJECT_HANDLE src = FindObjectCoveringFrameByExactAlias(
             edit,
             (g_apply_ctx->src_layer >= 0) ? g_apply_ctx->src_layer : g_apply_ctx->base_layer,
@@ -935,37 +1121,7 @@ static int FindFreeLayerAbove(EDIT_SECTION* edit, int base_layer, int start_fram
 
 // 超簡易 JSON 文字列抽出: "key":"value" を拾うだけ（Phase1-3 用）
 static std::optional<std::string> ExtractJsonString(const std::string& json, const std::string& key) {
-    std::string pat = "\"" + key + "\"";
-    size_t kpos = json.find(pat);
-    if (kpos == std::string::npos) return std::nullopt;
-
-    size_t colon = json.find(':', kpos + pat.size());
-    if (colon == std::string::npos) return std::nullopt;
-
-    size_t i = colon + 1;
-    while (i < json.size() && (json[i] == ' ' || json[i] == '\t' || json[i] == '\r' || json[i] == '\n')) i++;
-
-    if (i >= json.size() || json[i] != '"') return std::nullopt;
-    i++; // skip first quote
-
-    std::string out;
-    out.reserve(64);
-    for (; i < json.size(); i++) {
-        char c = json[i];
-        if (c == '\\' && i + 1 < json.size()) { // minimal unescape
-            char n = json[++i];
-            if (n == '"' || n == '\\' || n == '/') out.push_back(n);
-            else if (n == 'n') out.push_back('\n');
-            else if (n == 'r') out.push_back('\r');
-            else if (n == 't') out.push_back('\t');
-            else out.push_back(n);
-        } else if (c == '"') {
-            return out;
-        } else {
-            out.push_back(c);
-        }
-    }
-    return std::nullopt;
+    return ExtractJsonString2(json, key);
 }
 
 // ---- JSON minimal helpers (string/bool/number) ----
@@ -977,64 +1133,123 @@ static inline void SkipJsonWs(const std::string& s, size_t& i) {
     }
 }
 
-static std::optional<std::string> ExtractJsonString2(const std::string& json, const std::string& key) {
-    std::string pat = "\"" + key + "\"";
-    size_t kpos = json.find(pat);
-    if (kpos == std::string::npos) return std::nullopt;
-
-    size_t colon = json.find(':', kpos + pat.size());
-    if (colon == std::string::npos) return std::nullopt;
-
-    size_t i = colon + 1;
-    SkipJsonWs(json, i);
-    if (i >= json.size() || json[i] != '"') return std::nullopt;
-    i++;
-
-    std::string out;
+static bool ParseJsonStringLiteral(const std::string& s, size_t quote_pos, std::string& out, size_t* out_next = nullptr) {
+    if (quote_pos >= s.size() || s[quote_pos] != '"') return false;
+    size_t i = quote_pos + 1;
+    out.clear();
     out.reserve(64);
-    for (; i < json.size(); i++) {
-        char c = json[i];
-        if (c == '\\' && i + 1 < json.size()) {
-            char n = json[++i];
-            if (n == '"' || n == '\\' || n == '/') out.push_back(n);
-            else if (n == 'n') out.push_back('\n');
-            else if (n == 'r') out.push_back('\r');
-            else if (n == 't') out.push_back('\t');
-            else out.push_back(n);
-        } else if (c == '"') {
-            return out;
-        } else {
+
+    auto hexv = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return (int)(ch - '0');
+        if (ch >= 'a' && ch <= 'f') return 10 + (int)(ch - 'a');
+        if (ch >= 'A' && ch <= 'F') return 10 + (int)(ch - 'A');
+        return -1;
+    };
+
+    while (i < s.size()) {
+        char c = s[i++];
+        if (c == '"') {
+            if (out_next) *out_next = i;
+            return true;
+        }
+        if (c != '\\') {
             out.push_back(c);
+            continue;
+        }
+        if (i >= s.size()) return false;
+
+        char n = s[i++];
+        switch (n) {
+        case '"': out.push_back('"'); break;
+        case '\\': out.push_back('\\'); break;
+        case '/': out.push_back('/'); break;
+        case 'b': out.push_back('\b'); break;
+        case 'f': out.push_back('\f'); break;
+        case 'n': out.push_back('\n'); break;
+        case 'r': out.push_back('\r'); break;
+        case 't': out.push_back('\t'); break;
+        case 'u': {
+            if (i + 4 > s.size()) return false;
+            int h0 = hexv(s[i]);
+            int h1 = hexv(s[i + 1]);
+            int h2 = hexv(s[i + 2]);
+            int h3 = hexv(s[i + 3]);
+            if (h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0) return false;
+            int code = (h0 << 12) | (h1 << 8) | (h2 << 4) | h3;
+            if (code >= 0 && code <= 0x7F) out.push_back((char)code);
+            else out.push_back('?');
+            i += 4;
+            break;
+        }
+        default:
+            out.push_back(n);
+            break;
         }
     }
-    return std::nullopt;
+    return false;
+}
+
+static bool FindJsonValueStartTopLevel(const std::string& json, const std::string& key, size_t* out_value_pos) {
+    size_t i = 0;
+    SkipJsonWs(json, i);
+    if (i >= json.size() || json[i] != '{') return false;
+
+    int obj_depth = 0;
+    int arr_depth = 0;
+
+    while (i < json.size()) {
+        char c = json[i];
+        if (c == '"') {
+            std::string tok;
+            size_t after = i;
+            if (!ParseJsonStringLiteral(json, i, tok, &after)) return false;
+
+            if (obj_depth == 1 && arr_depth == 0) {
+                size_t j = after;
+                SkipJsonWs(json, j);
+                if (j < json.size() && json[j] == ':' && tok == key) {
+                    j++;
+                    SkipJsonWs(json, j);
+                    if (out_value_pos) *out_value_pos = j;
+                    return true;
+                }
+            }
+
+            i = after;
+            continue;
+        }
+
+        if (c == '{') { obj_depth++; i++; continue; }
+        if (c == '}') { obj_depth--; if (obj_depth < 0) break; i++; continue; }
+        if (c == '[') { arr_depth++; i++; continue; }
+        if (c == ']') { arr_depth--; i++; continue; }
+        i++;
+    }
+
+    return false;
+}
+
+static std::optional<std::string> ExtractJsonString2(const std::string& json, const std::string& key) {
+    size_t i = 0;
+    if (!FindJsonValueStartTopLevel(json, key, &i)) return std::nullopt;
+
+    std::string out;
+    size_t after = i;
+    if (!ParseJsonStringLiteral(json, i, out, &after)) return std::nullopt;
+    return out;
 }
 
 static std::optional<bool> ExtractJsonBool(const std::string& json, const std::string& key) {
-    std::string pat = "\"" + key + "\"";
-    size_t kpos = json.find(pat);
-    if (kpos == std::string::npos) return std::nullopt;
-
-    size_t colon = json.find(':', kpos + pat.size());
-    if (colon == std::string::npos) return std::nullopt;
-
-    size_t i = colon + 1;
-    SkipJsonWs(json, i);
+    size_t i = 0;
+    if (!FindJsonValueStartTopLevel(json, key, &i)) return std::nullopt;
     if (i + 4 <= json.size() && json.compare(i, 4, "true") == 0) return true;
     if (i + 5 <= json.size() && json.compare(i, 5, "false") == 0) return false;
     return std::nullopt;
 }
 
 static std::optional<double> ExtractJsonNumber(const std::string& json, const std::string& key) {
-    std::string pat = "\"" + key + "\"";
-    size_t kpos = json.find(pat);
-    if (kpos == std::string::npos) return std::nullopt;
-
-    size_t colon = json.find(':', kpos + pat.size());
-    if (colon == std::string::npos) return std::nullopt;
-
-    size_t i = colon + 1;
-    SkipJsonWs(json, i);
+    size_t i = 0;
+    if (!FindJsonValueStartTopLevel(json, key, &i)) return std::nullopt;
     if (i >= json.size()) return std::nullopt;
 
     // parse number token
@@ -1114,6 +1329,13 @@ static HANDLE   g_child_proc = nullptr;
 static HANDLE   g_child_job  = nullptr;
 static UINT_PTR g_timer_id   = 0;
 static bool     g_job_done   = false;
+static bool     g_waiting_result_after_exit = false;
+static DWORD    g_waiting_result_exit_code = 0;
+static ULONGLONG g_waiting_result_since_tick = 0;
+static bool     g_waiting_output_after_success = false;
+static ULONGLONG g_waiting_output_since_tick = 0;
+static int      g_result_parse_pending_count = 0;
+static ULONGLONG g_result_parse_pending_since_tick = 0;
 
 // ------------------------------------------------------------
 // Child process (python) lifecycle helpers
@@ -1178,6 +1400,13 @@ static void CleanupChildProcessAfterJobDone(const fs::path& jobdir) {
     AppendLog(jobdir, L"[proc] python exited; closing handles.");
     CloseHandleSafe(g_child_proc);
     CloseHandleSafe(g_child_job);
+    g_waiting_result_after_exit = false;
+    g_waiting_result_exit_code = 0;
+    g_waiting_result_since_tick = 0;
+    g_waiting_output_after_success = false;
+    g_waiting_output_since_tick = 0;
+    g_result_parse_pending_count = 0;
+    g_result_parse_pending_since_tick = 0;
 }
 
 static void LogItemValue(EDIT_SECTION* edit, const fs::path& jobdir, OBJECT_HANDLE obj,
@@ -1280,6 +1509,8 @@ static fs::path g_last_job_dir{};
 
 static fs::path PluginRootDir() {
     fs::path dir = fs::path(GetModuleDirW(g_hmod)); // DLLがあるフォルダ
+    fs::path cand_kaizo = dir / L"SAM3-kaizo";
+    if (fs::exists(cand_kaizo) && fs::is_directory(cand_kaizo)) return cand_kaizo;
     fs::path cand = dir / L"SAM3";
     if (fs::exists(cand) && fs::is_directory(cand)) return cand;
     return dir;
@@ -1339,7 +1570,9 @@ static FocusVideoInfo CaptureFocusVideo(EDIT_SECTION* edit) {
     OBJECT_LAYER_FRAME lf = edit->get_object_layer_frame(obj);
     out.layer = lf.layer;
     out.start_frame = lf.start;
-    out.end_frame = (lf.end > lf.start) ? (lf.end - 1) : lf.start;
+    // AviUtl2 timeline display/frame header compatibility:
+    // treat "frame=0,N" as (N+1) frames. So request end_frame keeps N.
+    out.end_frame = (lf.end >= lf.start) ? lf.end : lf.start;
 
     // fps（タイムライン換算フォールバック用）
     double fps = 30.0;
@@ -1350,12 +1583,23 @@ static FocusVideoInfo CaptureFocusVideo(EDIT_SECTION* edit) {
     out.timeline_fps = fps;
 
     // フォールバック：タイムラインのフレーム範囲を秒にしたもの
-    out.playback_start_sec = (double)lf.start / fps;
-    out.playback_end_sec   = (double)lf.end   / fps; // endはexclusive想定
+    out.playback_start_sec = (double)out.start_frame / fps;
+    // Keep playback range in sync with the +1 frame interpretation above.
+    out.playback_end_sec   = (double)(out.end_frame + 1) / fps;
 
     // alias（UTF-8）
     if (auto alias = edit->get_object_alias(obj)) {
         out.alias_utf8 = alias;
+        int alias_frame_start = 0;
+        int alias_frame_end = 0;
+        if (ParseAliasObjectFrameHeader(out.alias_utf8, alias_frame_start, alias_frame_end) &&
+            alias_frame_end >= alias_frame_start) {
+            // Trust alias header when available so request timeline matches .aup2 text.
+            out.start_frame = alias_frame_start;
+            out.end_frame = alias_frame_end;
+            out.playback_start_sec = (double)out.start_frame / fps;
+            out.playback_end_sec   = (double)(out.end_frame + 1) / fps;
+        }
     }
 
     // 1) alias解析：動画ファイル効果の「ファイル=」「再生位置=」を優先
@@ -1474,7 +1718,7 @@ static std::string BuildRequestJsonV1(
         << "      \"codec\": \"mp4v\",\n"
         << "      \"value_range\": \"0_255\",\n"
         << "      \"prefer_soft_mask\": true,\n"
-        << "      \"module_name\": \"SAM3mask\"\n"
+        << "      \"module_name\": \"SAM3mask-kaizo\"\n"
         << "    },\n"
         << "    \"gbbb\": {\n"
         << "      \"codec\": \"mp4v\",\n"
@@ -1513,7 +1757,7 @@ static void UpdateUiText(HWND hwnd, const FocusVideoInfo& f, const fs::path& job
 
 // ---- Python 起動 ----
 static std::optional<std::wstring> FindPythonExe() {
-    // 明示的に環境変数に上書き
+    // 1) explicit override by environment variable
     wchar_t envbuf[32768]{};
     DWORD n = GetEnvironmentVariableW(L"SAM3_PYTHON_EXE", envbuf, (DWORD)std::size(envbuf));
     if (n > 0 && n < (DWORD)std::size(envbuf)) {
@@ -1524,7 +1768,7 @@ static std::optional<std::wstring> FindPythonExe() {
         }
     }
 
-    // Pythonの場所
+    // 2) bundled python locations
     fs::path root = PluginRootDir();
     const fs::path cands[] = {
         root / L"Python" / L".venv" / L"Scripts" / L"python.exe",
@@ -1539,7 +1783,7 @@ static std::optional<std::wstring> FindPythonExe() {
         }
     }
 
-    // PATHを検索
+    // 3) PATH lookup
     wchar_t pathbuf[MAX_PATH * 4]{};
     DWORD got = SearchPathW(nullptr, L"python.exe", nullptr, (DWORD)std::size(pathbuf), pathbuf, nullptr);
     if (got > 0 && got < (DWORD)std::size(pathbuf)) {
@@ -1551,10 +1795,14 @@ static std::optional<std::wstring> FindPythonExe() {
 
 static fs::path PythonScriptPath() {
     fs::path root = PluginRootDir();
-    fs::path p1 = root / L"Python" / L"sam3_gradio_job.py";
-    fs::path p2 = root / L"python" / L"sam3_gradio_job.py";
+    fs::path p1 = root / L"Python" / L"sam3_gradio_job_kaizo.py";
+    fs::path p2 = root / L"python" / L"sam3_gradio_job_kaizo.py";
+    fs::path p3 = root / L"Python" / L"sam3_gradio_job.py";
+    fs::path p4 = root / L"python" / L"sam3_gradio_job.py";
     if (fs::exists(p1)) return p1;
     if (fs::exists(p2)) return p2;
+    if (fs::exists(p3)) return p3;
+    if (fs::exists(p4)) return p4;
     return p1;
 }
 
@@ -1581,7 +1829,7 @@ static bool LaunchPythonJob(const fs::path& jobdir) {
         return false;
     }
 
-    fs::path wdir = PluginRootDir() / L"Python";
+    fs::path wdir = script.parent_path();
     AppendLog(jobdir, L"WorkDir: " + wdir.wstring());
 
     std::wstring cmd =
@@ -1717,20 +1965,57 @@ static void PollJobFiles() {
 
     std::wstring ui = L"";
 
-    // If python already exited unexpectedly and there is no result.json, stop polling and report.
+    // If python exited but result.json is not yet visible, keep polling briefly.
     if (g_child_proc) {
         DWORD ec = 0;
         if (!IsChildProcessRunning(&ec)) {
             if (!fs::exists(resultp)) {
-                ui += L"[poll] Python process exited before result.json was created.\n";
-                ui += L"exit_code=" + std::to_wstring(ec) + L"\n";
-                ui += L"check: python.stdout.txt / python.stderr.txt";
-                UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
-                StopPollingTimer(g_hwnd);
-                CleanupChildProcessAfterJobDone(g_last_job_dir);
-                return;
+                constexpr ULONGLONG kResultGraceMs = 5000;
+                ULONGLONG now = GetTickCount64();
+
+                if (!g_waiting_result_after_exit) {
+                    g_waiting_result_after_exit = true;
+                    g_waiting_result_exit_code = ec;
+                    g_waiting_result_since_tick = now;
+                    AppendLog(g_last_job_dir,
+                        L"[poll] python exited without result.json (exit_code=" + std::to_wstring(ec) +
+                        L"). waiting for grace period...");
+                }
+
+                ULONGLONG elapsed = now - g_waiting_result_since_tick;
+                if (elapsed < kResultGraceMs) {
+                    ui += L"[poll] Python exited. Waiting for result.json...\n";
+                    ui += L"exit_code=" + std::to_wstring(g_waiting_result_exit_code) + L"\n";
+                    ui += L"waited_ms=" + std::to_wstring((unsigned long long)elapsed);
+                    UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                    return;
+                }
+
+                std::string fallback = BuildFallbackResultJsonOnUnexpectedExit(g_waiting_result_exit_code, g_last_job_dir);
+                if (!WriteTextFileUtf8Atomic(resultp, fallback)) {
+                    ui += L"[poll] Python process exited before result.json was created.\n";
+                    ui += L"exit_code=" + std::to_wstring(g_waiting_result_exit_code) + L"\n";
+                    ui += L"fallback result.json write failed.\n";
+                    ui += L"check: python.log.txt / python.stderr.txt";
+                    UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                    StopPollingTimer(g_hwnd);
+                    CleanupChildProcessAfterJobDone(g_last_job_dir);
+                    return;
+                }
+
+                g_waiting_result_after_exit = false;
+                g_waiting_result_exit_code = 0;
+                g_waiting_result_since_tick = 0;
+            } else {
+                g_waiting_result_after_exit = false;
+                g_waiting_result_exit_code = 0;
+                g_waiting_result_since_tick = 0;
             }
             // result.json exists => expected path; we'll handle it below and cleanup then.
+        } else {
+            g_waiting_result_after_exit = false;
+            g_waiting_result_exit_code = 0;
+            g_waiting_result_since_tick = 0;
         }
     }
 
@@ -1767,20 +2052,102 @@ static void PollJobFiles() {
         auto nf = ExtractJsonNumber(*r, "num_frames");
         auto ofps = ExtractJsonNumber(*r, "fps");
 
+        if (!success) {
+            constexpr ULONGLONG kInvalidResultGraceMs = 5000;
+            ULONGLONG now = GetTickCount64();
+            if (g_result_parse_pending_count == 0) {
+                g_result_parse_pending_since_tick = now;
+            }
+            g_result_parse_pending_count++;
+
+            ULONGLONG elapsed = now - g_result_parse_pending_since_tick;
+            bool child_running = IsChildProcessRunning(nullptr);
+            ui += L"\n[poll] result.json parse pending (missing/invalid 'success').";
+            ui += L"\ncount=" + std::to_wstring(g_result_parse_pending_count);
+
+            if (!child_running && elapsed >= kInvalidResultGraceMs) {
+                std::ostringstream ss;
+                ss << "{\n"
+                    << "  \"success\": false,\n"
+                    << "  \"error_message\": \"invalid result.json: missing or invalid 'success' key\",\n"
+                    << "  \"stats\": { \"num_frames\": 0, \"fps\": 0.0 }\n"
+                    << "}\n";
+                if (!WriteTextFileUtf8Atomic(resultp, ss.str())) {
+                    ui += L"\n[poll] fallback result.json write failed.";
+                    UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                    StopPollingTimer(g_hwnd);
+                    CleanupChildProcessAfterJobDone(g_last_job_dir);
+                    return;
+                }
+            }
+
+            UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+            return;
+        }
+        g_result_parse_pending_count = 0;
+        g_result_parse_pending_since_tick = 0;
+
         if (success && *success) {
             ui += L"\nresult: success=true";
             if (out_mode) ui += L"  mode=" + Utf8ToWide(*out_mode);
 
             UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
 
-            if (!g_job_done && outp && !outp->empty()) {
-                std::wstring outw = Utf8ToWide(*outp);
-                // ファイル存在＆サイズチェック（書き込み途中対策）
-                if (!FileExistsW(outw) || FileSizeSafe(fs::path(outw)) == 0) {
-                    ui += L"\n(挿入) 出力ファイルの生成を待機中...";
-                    UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
-                    return;
-                } else {
+            InsertMode im = InsertMode::Transparent;
+            if (insert_mode_s) im = InsertModeFromUtf8(*insert_mode_s);
+
+            if (!g_job_done) {
+                if (im != InsertMode::Transparent) {
+                    if (!outp || outp->empty()) {
+                        ui += L"\n[poll] result is success but output_video_path is empty.";
+                        UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                        StopPollingTimer(g_hwnd);
+                        CleanupChildProcessAfterJobDone(g_last_job_dir);
+                        return;
+                    }
+
+                    std::wstring outw = Utf8ToWide(*outp);
+                    if (!FileExistsW(outw) || FileSizeSafe(fs::path(outw)) == 0) {
+                        constexpr ULONGLONG kOutputReadyGraceMs = 15000;
+                        ULONGLONG now = GetTickCount64();
+                        if (!g_waiting_output_after_success) {
+                            g_waiting_output_after_success = true;
+                            g_waiting_output_since_tick = now;
+                            AppendLog(g_last_job_dir,
+                                L"[poll] result success but output video not ready yet. waiting...");
+                        }
+
+                        ULONGLONG elapsed = now - g_waiting_output_since_tick;
+                        if (elapsed < kOutputReadyGraceMs) {
+                            ui += L"\n[poll] output file not ready yet...";
+                            ui += L"\nwaited_ms=" + std::to_wstring((unsigned long long)elapsed);
+                            UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                            return;
+                        }
+
+                        std::ostringstream ss;
+                        ss << "{\n"
+                            << "  \"success\": false,\n"
+                            << "  \"error_message\": \"result success but output file was not ready after timeout: "
+                            << JsonEscape(*outp) << "\",\n"
+                            << "  \"stats\": { \"num_frames\": 0, \"fps\": 0.0 }\n"
+                            << "}\n";
+                        if (!WriteTextFileUtf8Atomic(resultp, ss.str())) {
+                            ui += L"\n[poll] output-file-timeout fallback write failed.";
+                            UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                            StopPollingTimer(g_hwnd);
+                            CleanupChildProcessAfterJobDone(g_last_job_dir);
+                            return;
+                        }
+                        g_waiting_output_after_success = false;
+                        g_waiting_output_since_tick = 0;
+                        UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
+                        return;
+                    }
+                }
+                g_waiting_output_after_success = false;
+                g_waiting_output_since_tick = 0;
+
                     // ---- 以降: 要件に合わせて「挿入モード」で挙動を分岐 ----
                     // 透過: fg(黒背景) + mask を前提に aliasへ「マスク適用（α化）」を追記して挿入
                     // GB/BB: 合成動画のみ挿入（マスク効果なし）
@@ -1789,15 +2156,10 @@ static void PollJobFiles() {
                     auto alias = ReadAllText(g_last_job_dir / L"focus_alias_utf8.txt");
                     if (!alias || alias->empty()) {
                         ui += L"\n(挿入) FAILED: focus_alias_utf8.txt が見つからないか空です。";
-                        MessageBoxW(g_hwnd, L"focus_alias_utf8.txt が見つかりません。もう一度「取得」→「実行」を行ってください。", L"SAM3", MB_OK);
+                        MessageBoxW(g_hwnd, L"focus_alias_utf8.txt が見つかりません。もう一度「取得」→「実行」を行ってください。", L"SAM3-kaizo", MB_OK);
                         UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
                         return;
                     }
-
-
-                    InsertMode im = InsertMode::GB;
-                    if (insert_mode_s) im = InsertModeFromUtf8(*insert_mode_s);
-
 					// Build inserted alias according to requirements:
 					//  - Transparent: duplicate ORIGINAL video + upsert alpha mask effect
 					//  - GB/BB: replace video path with composited output (drop playback lines as current function does)
@@ -1807,11 +2169,41 @@ static void PollJobFiles() {
 						if (maskp && !maskp->empty()) {
                             // マスクは「取得時の再生範囲」だけ生成しているので、その基準(開始/終了秒)を alias に埋め込む
                             // これにより、分割後に「動画ファイル」の再生位置が進んでもマスクが先頭に戻らない
+                            double mask_src_start_sec = g_last_focus.playback_start_sec;
+                            double mask_src_end_sec = g_last_focus.playback_end_sec;
+
+                            // Prefer generated mask length (num_frames/fps) over request playback_end.
+                            // This avoids 1-frame lead when request playback_end has +1f drift.
+                            if (nf && *nf > 0.0 && ofps && *ofps > 0.0) {
+                                double generated_dur_sec = (*nf) / (*ofps);
+                                if (generated_dur_sec > 0.0 && std::isfinite(generated_dur_sec)) {
+                                    mask_src_end_sec = mask_src_start_sec + generated_dur_sec;
+                                }
+                            }
+                            if (!(mask_src_end_sec > mask_src_start_sec)) {
+                                mask_src_end_sec = g_last_focus.playback_end_sec;
+                            }
+                            if (!(mask_src_end_sec > mask_src_start_sec)) {
+                                mask_src_end_sec = mask_src_start_sec;
+                            }
+
+                            {
+                                wchar_t dbg[256]{};
+                                swprintf_s(
+                                    dbg,
+                                    L"[insert] transparent mask range start=%.6f end=%.6f (playback_end=%.6f)\n",
+                                    mask_src_start_sec,
+                                    mask_src_end_sec,
+                                    g_last_focus.playback_end_sec
+                                );
+                                AppendLog(g_last_job_dir, dbg);
+                            }
+
                             patched = PatchAliasUpsertAlphaMaskEffect(
                                 patched,
                                 *maskp,
-                                g_last_focus.playback_start_sec,
-                                g_last_focus.playback_end_sec
+                                mask_src_start_sec,
+                                mask_src_end_sec
                             );
 						} else {
 							ui += L"\n[warn] insert_mode=transparent but mask_video_path is empty.";
@@ -1824,7 +2216,7 @@ static void PollJobFiles() {
                             MessageBoxW(
                                 g_hwnd,
                                 L"Could not replace video file path in alias.\nCheck focus_alias_utf8.txt.",
-                                L"SAM3",
+                                L"SAM3-kaizo",
                                 MB_OK
                             );
                             UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
@@ -1837,21 +2229,21 @@ static void PollJobFiles() {
                     ApplyCtx actx;
                     // create_object_from_alias は alias 内 frame 情報で length を上書きしうるため、
                     // ここで必ず frame=0,<len> に正規化して “意図した長さ” を固定する
-                    int expected_len = (g_last_focus.end_frame >= g_last_focus.start_frame)
+                    int expected_len_raw = (g_last_focus.end_frame >= g_last_focus.start_frame)
                         ? (g_last_focus.end_frame - g_last_focus.start_frame + 1) : 1;
+                    int expected_len = ApplyLengthAdjustFrames(expected_len_raw);
                     patched = NormalizeAliasObjectFrameHeader(patched, expected_len);
                     actx.alias_utf8 = std::move(patched);
                     actx.frame = (g_last_focus.start_frame >= 0) ? g_last_focus.start_frame : 0;
                     actx.base_layer = (g_last_focus.layer >= 0) ? g_last_focus.layer : 0;
-                    actx.fallback_length = (g_last_focus.end_frame >= g_last_focus.start_frame)
-                        ? (g_last_focus.end_frame - g_last_focus.start_frame + 1) : 1;
+                    actx.fallback_length = expected_len;
                     actx.out_num_frames = (nf && *nf > 0) ? (int)std::llround(*nf) : 0;
                     actx.out_fps = (ofps && *ofps > 0.0) ? *ofps : 0.0;
                     actx.name_w = (im == InsertMode::Transparent) ? L"SAM3 src+mask (alpha)" : L"SAM3 output (GB/BB)";
                     actx.focus_after = true;
 
-                    // auto-hide source object (opacity=100 + audio disable)
-					actx.hide_source = true;
+                    // replace source object in-place
+					actx.replace_source = true;
 					actx.src_layer = actx.base_layer;
 					actx.src_frame = actx.frame;
 					actx.src_alias_utf8 = *alias; // original alias (for source identification)
@@ -1867,14 +2259,13 @@ static void PollJobFiles() {
                         g_job_done = true;
                     } else {
                         ui += L"\n(挿入) 失敗: オブジェクトの生成に失敗しました";
-                        MessageBoxW(g_hwnd, L"オブジェクトの挿入に失敗しました。\nlauncher.log.txt または patched_alias_utf8.txt を確認してください。", L"SAM3", MB_OK);
+                        MessageBoxW(g_hwnd, L"オブジェクトの挿入に失敗しました。\nlauncher.log.txt または patched_alias_utf8.txt を確認してください。", L"SAM3-kaizo", MB_OK);
                     }
 
                     // デバッグ用に patched を保存
                     WriteTextFileUtf8Atomic(g_last_job_dir / L"patched_alias_after_insert_utf8.txt", actx.alias_utf8);
                     UpdateUiText(g_hwnd, g_last_focus, g_last_job_dir, ui);
                 }
-            }
 
             // Job done: stop polling and cleanup python handles/process (python should already have exited).
             StopPollingTimer(g_hwnd);
@@ -1996,6 +2387,13 @@ static LRESULT CALLBACK PanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                 return 0;
             }
             g_job_done = false;
+            g_waiting_result_after_exit = false;
+            g_waiting_result_exit_code = 0;
+            g_waiting_result_since_tick = 0;
+            g_waiting_output_after_success = false;
+            g_waiting_output_since_tick = 0;
+            g_result_parse_pending_count = 0;
+            g_result_parse_pending_since_tick = 0;
             JobsGCKeepLatestN(20);
 
             std::string job_id = MakeJobId();
@@ -2064,7 +2462,7 @@ static LRESULT CALLBACK PanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                 ShellExecuteW(nullptr, L"open", urlw->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             } else {
                 std::wstring msg = L"WebUIのURLがまだ取得できていません。\n\n参照先:\n" + (jobdir / L"status.json").wstring();
-                MessageBoxW(hwnd, msg.c_str(), L"SAM3", MB_OK);
+                MessageBoxW(hwnd, msg.c_str(), L"SAM3-kaizo", MB_OK);
             }
             return 0;
         }
@@ -2098,7 +2496,7 @@ static LRESULT CALLBACK PanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
 }
 
 static HWND CreatePanelWindow() {
-    const wchar_t* kClassName = L"SAM3_AUX2_PANEL";
+    const wchar_t* kClassName = L"SAM3_KAIZO_AUX2_PANEL";
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -2125,7 +2523,7 @@ static HWND CreatePanelWindow() {
     HWND hwnd = CreateWindowExW(
         exstyle,
         kClassName,
-        L"SAM3",
+        L"SAM3-kaizo",
         style,
         CW_USEDEFAULT, CW_USEDEFAULT, 560, 220,
         nullptr, nullptr,
@@ -2140,12 +2538,12 @@ void RegisterPlugin(HOST_APP_TABLE* host)
 {
     g_host = host;
 
-    host->set_plugin_information(L"SAM3");
+    host->set_plugin_information(L"SAM3-kaizo");
 
     g_edit = host->create_edit_handle();
 
     g_hwnd = CreatePanelWindow();
     if (g_hwnd) {
-        host->register_window_client(L"SAM3", g_hwnd);
+        host->register_window_client(L"SAM3-kaizo", g_hwnd);
     }
 }

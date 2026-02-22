@@ -56,7 +56,7 @@ SCRIPT_MODULE_FUNCTION functions[] = {
 
 
 SCRIPT_MODULE_TABLE script_module_table = {
-	L"sam3mask",	// モジュールの表示名
+	L"sam3mask-kaizo",	// モジュールの表示名
 	functions
 };
 
