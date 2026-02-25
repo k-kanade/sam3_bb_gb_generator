@@ -1,7 +1,7 @@
 # はじめに
 
 こちらは以下のプラグインの問題点を修復し、処理の最適化をしたものです  
-なおCUDA 12.8対応のGPUが必須となるので注意してください
+なおCUDA 12.8対応のGPUが必須となるので注意してください  
 元のプラグイン:https://github.com/clean262/sam3_bb_gb_generator  
 
 ## 主な変更点  
@@ -30,13 +30,13 @@
 # 導入方法  
 1.releasesから`kanade-SAM.au2pkg.zip`をダウンロードし、AviUtl2にD&Dしてください  
 2.`python` フォルダで `uv sync --frozen --python 3.13` を実行してください(`python/.venv` が作成され、以降はこの仮想環境が既定で使われます)
-3.このkaizo版はCUDA必須です。CPUでSAM3を動かしません
-  `torch==2.9.1+cu128` / `torchvision==0.24.1+cu128` に固定済みなので、通常は追加インストール不要です(`uv sync`で揃います)
+3.このkaizo版はCUDA必須です。CPUでSAM3を動かしません  
+  `torch==2.9.1+cu128` / `torchvision==0.24.1+cu128` に固定済みなので、通常は追加インストール不要です(`uv sync`で揃います)  
 4.Hugging Faceからfacebook/sam3のアクセス権を入手し、Read権限のあるTokenを取得してください  
 5.`uv run hf auth login`を実行し、Tokenを設定してください  
 
 # 使い方
-元のプラグイン:https://github.com/clean262/sam3_bb_gb_generator  と大差ないです
+元のプラグイン:https://github.com/clean262/sam3_bb_gb_generator  と大差ないです  
 ※パネルにある「仮想環境を使用しない」をONにすると、`.venv` を使わずに `SAM3_PYTHON_EXE` / 同梱Python / PATH から `python.exe` を探します(既定はOFF)
 
 # 修正と最適化一覧  
