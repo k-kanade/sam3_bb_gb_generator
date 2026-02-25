@@ -122,8 +122,6 @@
 - `installer/install.cmd`  
 - `installer/install.ps1`  
 - `python/uv.lock`  
-- `uv_license/LICENSE-APACHE`  
-- `uv_license/LICENSE-MIT`  
 
 ### 変更  
 - `CMakeLists.txt`  
