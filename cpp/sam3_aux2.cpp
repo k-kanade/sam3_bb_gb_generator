@@ -475,6 +475,7 @@ static std::string PatchAliasReplaceVideoFilePath(
 }
 
 // エイリアスからframe=a,bを解析
+static bool ParseAliasObjectFrameHeader(const std::string& alias_utf8, int& a_out, int& b_out) {
     std::string s = alias_utf8;
     if (s.size() >= 3 &&
         (unsigned char)s[0] == 0xEF &&
@@ -1473,6 +1474,7 @@ static HWND g_edit_path = nullptr;
 static HWND g_edit_job = nullptr;
 static HWND g_static_status = nullptr;
 static HWND g_combo_insert = nullptr;
+static HWND g_chk_no_venv = nullptr;
 static HFONT g_ui_font = nullptr;
 
 static HFONT CreateSystemMessageFont() {
@@ -1724,7 +1726,6 @@ static std::string BuildRequestJsonV1(
         << "  \"timestamp_jst\": \"\",\n"
         << "\n"
         << "  \"options\": {\n"
-        << "    \"max_seconds\": 0,\n"
         << "    \"device_preference\": \"cuda\",\n"
         << "    \"decode_mode\": \"segment_only\",\n"
         << "    \"write_atomic\": true,\n"
@@ -1749,8 +1750,14 @@ static void UpdateUiText(HWND hwnd, const FocusVideoInfo& f, const fs::path& job
     }
 }
 
+static bool IsNoVenvModeEnabled() {
+    if (!g_chk_no_venv) return false;
+    LRESULT st = SendMessageW(g_chk_no_venv, BM_GETCHECK, 0, 0);
+    return st == BST_CHECKED;
+}
+
 // ---- Python 起動 ----
-static std::optional<std::wstring> FindPythonExe() {
+static std::optional<std::wstring> FindPythonExe(bool disable_venv) {
     // 1) 明示的に環境変数に上書き
     wchar_t envbuf[32768]{};
     DWORD n = GetEnvironmentVariableW(L"SAM3_PYTHON_EXE", envbuf, (DWORD)std::size(envbuf));
@@ -1764,12 +1771,13 @@ static std::optional<std::wstring> FindPythonExe() {
 
     // 2) Pythonの場所
     fs::path root = PluginRootDir();
-    const fs::path cands[] = {
-        root / L"Python" / L".venv" / L"Scripts" / L"python.exe",
-        root / L"python" / L".venv" / L"Scripts" / L"python.exe",
-        root / L"Python" / L"python.exe",
-        root / L"python" / L"python.exe",
-    };
+    std::vector<fs::path> cands;
+    if (!disable_venv) {
+        cands.push_back(root / L"Python" / L".venv" / L"Scripts" / L"python.exe");
+        cands.push_back(root / L"python" / L".venv" / L"Scripts" / L"python.exe");
+    }
+    cands.push_back(root / L"Python" / L"python.exe");
+    cands.push_back(root / L"python" / L"python.exe");
     for (const auto& p : cands) {
         std::error_code ec;
         if (fs::exists(p, ec) && !fs::is_directory(p, ec)) {
@@ -1807,11 +1815,19 @@ static bool LaunchPythonJob(const fs::path& jobdir) {
 
     if (g_child_proc || g_child_job) ForceKillChildProcessTree(jobdir, L"pre-launch cleanup");
 
-    auto py = FindPythonExe();
+    const bool disable_venv = IsNoVenvModeEnabled();
+    AppendLog(jobdir, std::wstring(L"NoVenvMode: ") + (disable_venv ? L"ON" : L"OFF"));
+
+    auto py = FindPythonExe(disable_venv);
     if (!py) {
         AppendLog(jobdir, L"FindPythonExe FAILED. Expected one of:");
-        AppendLog(jobdir, (PluginRootDir() / L"Python" / L".venv" / L"Scripts" / L"python.exe").wstring());
+        if (!disable_venv) {
+            AppendLog(jobdir, (PluginRootDir() / L"Python" / L".venv" / L"Scripts" / L"python.exe").wstring());
+            AppendLog(jobdir, (PluginRootDir() / L"python" / L".venv" / L"Scripts" / L"python.exe").wstring());
+        }
         AppendLog(jobdir, (PluginRootDir() / L"Python" / L"python.exe").wstring());
+        AppendLog(jobdir, (PluginRootDir() / L"python" / L"python.exe").wstring());
+        AppendLog(jobdir, L"PATH: python.exe");
         return false;
     }
     AppendLog(jobdir, L"PythonExe: " + *py);
@@ -2317,6 +2333,17 @@ static void CreateChildControls(HWND hwnd) {
         SendMessageW(g_combo_insert, CB_ADDSTRING, 0, (LPARAM)L"GB");
         SendMessageW(g_combo_insert, CB_ADDSTRING, 0, (LPARAM)L"BB");
         SendMessageW(g_combo_insert, CB_SETCURSEL, 0, 0); // default 透過
+    }
+
+    g_chk_no_venv = CreateWindowW(
+        L"BUTTON",
+        L"仮想環境を使用しない",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        420, 12, 130, 22,
+        hwnd, (HMENU)1103, g_hmod, nullptr
+    );
+    if (g_chk_no_venv) {
+        SendMessageW(g_chk_no_venv, BM_SETCHECK, BST_UNCHECKED, 0); // default: OFF
     }
 
     g_btn_run = CreateWindowW(L"BUTTON", L"2) 実行", WS_CHILD | WS_VISIBLE,

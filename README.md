@@ -1,8 +1,7 @@
-# このプラグインをカタログに登録しないでください
-
 # はじめに
 
 こちらは以下のプラグインの問題点を修復し、処理の最適化をしたものです  
+なおCUDA 12.8対応のGPUが必須となるので注意してください
 元のプラグイン:https://github.com/clean262/sam3_bb_gb_generator  
 
 ## 主な変更点  
@@ -12,26 +11,34 @@
 - 「透過」がどうにもならなかったので「GB」として出力  
 - 後色々と変更(下記見てね)  
 
-こちらではPythonがインストールが必須になります  
-ローカル環境にライブラリをインストールする前提で作成してます  
 このkaizo版の問題点はこのリポジトリに連絡してください  
+
 
 # 必須なもの  
 - Python3.13.xx  
+- uv  
+- git
 - CUDA  
 - Hugging FaceアカウントとRead Token
-- FFmpeg(最新のもの)
-- つよいPC　
+
+# uv環境の作り方  
+ローカルにライブラリを入れたくない人、Pythonとか分からんって人はこちらを「まず」実行してください  
+1.gitをインストールする (https://git-scm.com/)  
+2.PowerShellで`powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"` を実行  
+3.FFmpeg,exeを`data/Plugin/SAM3-kaizo` に配置してください (https://www.gyan.dev/ffmpeg/builds/)  
 
 # 導入方法  
 1.releasesから`kanade-SAM.au2pkg.zip`をダウンロードし、AviUtl2にD&Dしてください  
-2.ライブラリ  
-・`pip install accelerate gradio av imageio-ffmpeg imageio[pyav] kernels opencv-python spaces transformers triton-windows huggingface-hub`  
-3.CPUの場合 `pip install torch`  
-  GPUの場合 https://pytorch.org/get-started/locally/ を見て自分のCUDAのバージョンに合わせてしてください  
+2.`python` フォルダで `uv sync --frozen --python 3.13` を実行してください(`python/.venv` が作成され、以降はこの仮想環境が既定で使われます)
+3.このkaizo版はCUDA必須です。CPUでSAM3を動かしません
+  `torch==2.9.1+cu128` / `torchvision==0.24.1+cu128` に固定済みなので、通常は追加インストール不要です(`uv sync`で揃います)
 4.Hugging Faceからfacebook/sam3のアクセス権を入手し、Read権限のあるTokenを取得してください  
-5.`run hf auth login`を実行し、Tokenを設定してください  
-6.FFmpegをPathに通すか`Plugin\SAM3-kaizo`に`FFmpeg.exe`を置いてください
+5.`uv run hf auth login`を実行し、Tokenを設定してください  
+
+# 使い方
+元のプラグイン:https://github.com/clean262/sam3_bb_gb_generator  と大差ないです
+※パネルにある「仮想環境を使用しない」をONにすると、`.venv` を使わずに `SAM3_PYTHON_EXE` / 同梱Python / PATH から `python.exe` を探します(既定はOFF)
+
 # 修正と最適化一覧  
 
 ## 名前変更  
@@ -74,12 +81,13 @@
 - フレーム保持を `OnDemandVideoFrames` に変更し、メモリ使用を抑制  
 - 推論セッションをチャンク単位で遅延ロード(メモリ不足時に縮小リトライ)  
 - マスクを packed 形式で保持してメモリ負荷を軽減  
-- propagate を「フルセッション優先 + 失敗時チャンクフォールバック」に拡張  
+- propagate を「overlap付きチャンク伝播(例: 256 + 32）」へ変更し、低メモリで全フレーム伝播できるように調整  
 - 出力ファイル名を `元動画名_GB/BB.mp4` へ整理し、中間生成物の掃除を追加  
 - UI 待機タイムアウト、最終例外時の `result.json` 強制出力を追加  
 - 安定化のため、Finish 時は透明指定でも GB/BB 出力へフォールバック  
 - `request.json` のオプション読込を拡張し、`session_chunk_frames` やメモリ予算比率を反映可能化  
-- CUDA実行時は `triton` 検出と TF32設定を行い、非対応環境では安全にCPU/非compileへ降格  
+- `request.json` の `options.propagate_chunk_overlap_frames` で overlap 幅を調整可能化  
+- CUDA実行時は `triton` 検出と TF32設定を行い、CUDA非対応環境では即時失敗で停止  
 - PyAV(`av`)の事前チェックを追加し、SAM3動画セッション生成失敗を起動時に検出  
 - `OnDemandVideoFrames` にフレームキャッシュ上限を持たせ、長尺でもメモリ常駐を抑制  
 - セグメント前処理を `nvenc -> x264 -> accurate seek + pad` の順で再試行し、不足フレームに対応  
@@ -98,7 +106,6 @@
   - 旧 `uv` index/source 設定を削除  
 - `python/requirements-cuda.txt` を追加し、pip導入で必要依存をまとめて入れられるように変更  
 - `DL用/kanade-SAM.au2pkg` に kaizo版の配布用ファイル一式を追加  
-- `DL用/kanade-SAM.au2pkg/Plugin/SAM3-kaizo/Python/sam3_gradio_job_kaizo.py` を同梱し、配布側と開発側のスクリプトを一致させた  
 
 ## 変更ファイル一覧  
 ### 追加  
