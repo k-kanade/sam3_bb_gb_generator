@@ -1281,10 +1281,60 @@ def _call_init_video_session(processor, **kwargs):
     filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
     return processor.init_video_session(**filtered)
 
+def _session_obj_ids_with_inputs_on_frame(inference_session, frame_idx: int) -> List[int]:
+    # Coframe_idx、今のマスクを持ってるオブジェクトIDを取得
+    if inference_session is None:
+        return []
+    try:
+        num_objs = int(inference_session.get_obj_num())
+    except Exception:
+        return []
+
+    out: List[int] = []
+    fidx = int(frame_idx)
+    for obj_idx in range(max(0, num_objs)):
+        has_points = False
+        has_masks = False
+        try:
+            has_points = inference_session.point_inputs_per_obj.get(obj_idx, {}).get(fidx, None) is not None
+        except Exception:
+            has_points = False
+        try:
+            has_masks = inference_session.mask_inputs_per_obj.get(obj_idx, {}).get(fidx, None) is not None
+        except Exception:
+            has_masks = False
+        if not (has_points or has_masks):
+            continue
+        try:
+            out.append(int(inference_session.obj_idx_to_id(obj_idx)))
+        except Exception:
+            continue
+    return out
+
+def _refresh_obj_with_new_inputs_for_frame(inference_session, frame_idx: int) -> None:
+    if inference_session is None:
+        return
+    try:
+        obj_ids = _session_obj_ids_with_inputs_on_frame(inference_session, int(frame_idx))
+        if obj_ids:
+            inference_session.obj_with_new_inputs = obj_ids
+    except Exception:
+        pass
+
 def _call_add_inputs(processor, **kwargs):
     sig = inspect.signature(processor.add_inputs_to_inference_session)
     filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    return processor.add_inputs_to_inference_session(**filtered)
+    out = processor.add_inputs_to_inference_session(**filtered)
+
+    # 複数のオブジェクトを安定させる為のやつ
+    sess = filtered.get("inference_session", None)
+    if sess is not None:
+        try:
+            fidx = int(filtered.get("frame_idx"))
+            _refresh_obj_with_new_inputs_for_frame(sess, fidx)
+        except Exception:
+            pass
+    return out
 
 def _clear_points_for_object_all_frames(state: "AppState", obj_id: int) -> None:
     """
