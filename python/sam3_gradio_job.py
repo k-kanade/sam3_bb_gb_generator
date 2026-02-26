@@ -1869,7 +1869,7 @@ def compose_frame(state: AppState, frame_idx: int) -> Image.Image:
         cross_half = 6
         for obj_id, pts in clicks_map.items():
             for x, y, lbl in pts:
-                color = (0, 255, 0) if int(lbl) == 1 else (255, 0, 0)
+                color = (0, 255, 0) if int(lbl) == 0 else (255, 0, 0)
                 draw.line([(x - cross_half, y), (x + cross_half, y)], fill=color, width=2)
                 draw.line([(x, y - cross_half), (x, y + cross_half)], fill=color, width=2)
 
@@ -2067,7 +2067,7 @@ def on_image_click(
         state.composited_frames.pop(ann_frame_idx, None)
 
     else:
-        label_int = 1 if str(label).lower().startswith("pos") else 0
+        label_int = 0 if str(label).lower().startswith("pos") else 1
         frame_clicks = state.clicks_by_frame_obj.setdefault(ann_frame_idx, {})
         obj_clicks = frame_clicks.setdefault(ann_obj_id, [])
 
@@ -2078,27 +2078,53 @@ def on_image_click(
 
         obj_clicks.append((int(x), int(y), int(label_int)))
 
-        # Send only the new click as delta input. Sending the full click list with
-        # clear_old_inputs=False can duplicate past clicks inside the tracker.
-        points = [[[[int(x), int(y)]]]]
-        labels = [[[int(label_int)]]]
+        clicks_map = state.clicks_by_frame_obj.get(ann_frame_idx, {})
+        boxes_map = state.boxes_by_frame_obj.get(ann_frame_idx, {})
+        all_obj_ids = sorted(set(clicks_map.keys()) | set(boxes_map.keys()))
 
-        try:
-            _call_add_inputs(
-                processor,
-                inference_session=state.inference_session,
-                frame_idx=int(ann_sess_frame_idx),
-                obj_ids=[ann_obj_id],
-                input_points=points,
-                input_labels=labels,
-                original_size=orig_size,
-                clear_old_inputs=bool(clear_old),
-            )
-        except Exception as e:
-            if _JOB_USE_TORCH_COMPILE and _is_torch_compile_runtime_failure(e):
-                _disable_torch_compile_runtime(str(e))
-                raise gr.Error("Torch runtime error detected. torch.compile was disabled. Please click again.")
-            raise
+        for oid in all_obj_ids:
+            boxes = boxes_map.get(oid, [])
+            if boxes:
+                x1, y1, x2, y2 = boxes[-1]
+                box3 = [[[int(x1), int(y1), int(x2), int(y2)]]]
+                try:
+                    _call_add_inputs(
+                        processor,
+                        inference_session=state.inference_session,
+                        frame_idx=int(ann_sess_frame_idx),
+                        obj_ids=[int(oid)],
+                        input_boxes=box3,
+                        original_size=orig_size,
+                        clear_old_inputs=True,
+                    )
+                except Exception as e:
+                    if _JOB_USE_TORCH_COMPILE and _is_torch_compile_runtime_failure(e):
+                        _disable_torch_compile_runtime(str(e))
+                        raise gr.Error("Torch runtime error detected. torch.compile was disabled. Please click again.")
+                    raise
+                continue
+
+            clicks = clicks_map.get(oid, [])
+            if clicks:
+                points = [[[[int(c[0]), int(c[1])] for c in clicks]]]
+                labels = [[[int(c[2]) for c in clicks]]]
+                try:
+                    _call_add_inputs(
+                        processor,
+                        inference_session=state.inference_session,
+                        frame_idx=int(ann_sess_frame_idx),
+                        obj_ids=[int(oid)],
+                        input_points=points,
+                        input_labels=labels,
+                        original_size=orig_size,
+                        clear_old_inputs=True,
+                    )
+                except Exception as e:
+                    if _JOB_USE_TORCH_COMPILE and _is_torch_compile_runtime_failure(e):
+                        _disable_torch_compile_runtime(str(e))
+                        raise gr.Error("Torch runtime error detected. torch.compile was disabled. Please click again.")
+                    raise
+
         state.composited_frames.pop(ann_frame_idx, None)
 
     # run inference for that frame
